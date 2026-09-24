@@ -17,7 +17,7 @@
   - `PBBP/pbb16-softcore/` — PBB16 的 Verilog 软核项目（中度重设计版，iverilog 仿真优先），ISA 规格见 `docs/PBB16_v2_ISA.md`；`rtl/` 为可综合 RTL（多周期核，全部 48 条指令 + 异常/4 路中断；`bus.v` 地址译码总线：RAM 0x0000–0xEFFF 与 0xFF00–0xFFFF、MMIO 0xF000–0xFEFF 每设备 16 字节共 8 槽；`uart.v` 槽 0 UART），`tb/` 为 testbench。仿真：`iverilog -g2012 -I rtl -o tb/out.vvp rtl/*.v tb/tb_count_loop.v && vvp tb/out.vvp`；ALU 单测：`iverilog -g2012 -I rtl -o tb/alu.vvp rtl/alu.v tb/tb_alu.v && vvp tb/alu.vvp`；第二阶段系统测试（先汇编再跑）：`python asm/pbb16asm.py asm/test_phase2.asm -o asm/test_phase2.hex && iverilog -g2012 -I rtl -o tb/phase2.vvp rtl/*.v tb/tb_phase2.v && vvp tb/phase2.vvp`；总线/UART 测试：`python asm/pbb16asm.py asm/test_bus_uart.asm -o asm/test_bus_uart.hex && iverilog -g2012 -I rtl -o tb/bus_uart.vvp rtl/*.v tb/tb_bus_uart.v && vvp tb/bus_uart.vvp`；`asm/` 为配套单文件 Python 汇编器（仅用标准库）：`python asm/pbb16asm.py 输入.asm -o 输出.hex [--format memh|raw]`（默认 memh，供 testbench 用 `$readmemh` 加载；raw 为 Logisim `v2.0 raw` 映像）
   - `PBBP/内存映像/`、`PBBP/PBB 16/mem/` — Logisim 内存映像文件（`v2.0 raw` 十六进制格式）
   - 根级散落的 `*.circ`（`2333.circ`、`Stack.circ`、`TEST.circ` 等）为实验性电路
-- `新建文件夹/` — 较新的设计：`lambdaCPU v4.circ`（含配套的 `lambdaCPU instructionset.xlsx` 指令集表格）、`muCPU[rev1].circ`、`FPU_ro.circ`
+- `新建文件夹/` — ~~较新的设计~~ 【其实是别人的设计】：`lambdaCPU v4.circ`（含配套的 `lambdaCPU instructionset.xlsx` 指令集表格）、`muCPU[rev1].circ`、`FPU_ro.circ`
 - `杂/` — 杂项实验电路（含一个 Logisim Evolution 2.13.22 格式的 `00.circ`，以及歌词显示器等）
 - 根目录工具与参考：
   - `logisim-generic-2.7.1_TRP汉化版.jar` — Logisim 2.7.1（汉化版），**绝大多数 `.circ` 文件用此版本创建**（文件头 `source="2.7.1"`）

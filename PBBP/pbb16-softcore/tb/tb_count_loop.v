@@ -32,7 +32,7 @@ module tb_count_loop;
         .clk(clk), .rst_n(rst_n),
         .mem_addr(mem_addr), .mem_wdata(mem_wdata),
         .mem_we(mem_we), .mem_re(mem_re), .mem_size(mem_size),
-        .mem_rdata(mem_rdata), .halted(halted)
+        .mem_rdata(mem_rdata), .irq(4'b0000), .halted(halted)
     );
 
     // 写 16 位字到内存（小端）

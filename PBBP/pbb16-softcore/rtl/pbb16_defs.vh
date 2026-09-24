@@ -88,12 +88,43 @@
 `define FLG_Z     2'b11
 
 // ---- ALU b 操作数选择 ----
-`define SELB_REG  2'b00      // 寄存器 rs
-`define SELB_IMM8S 2'b01     // sext(Imm8)
-`define SELB_IMM8Z 2'b10     // zext(Imm8)
-`define SELB_SHAMT 2'b11     // zext(shamt4)
+`define SELB_REG   3'd0      // 寄存器 rs
+`define SELB_IMM8S 3'd1      // sext(Imm8)
+`define SELB_IMM8Z 3'd2      // zext(Imm8)
+`define SELB_SHAMT 3'd3      // zext(shamt4)
+`define SELB_IMM5S 3'd4      // sext(Imm5)（M 型地址偏移）
+`define SELB_TWO   3'd5      // 常量 2（栈指针 ±2）
+
+// ---- ALU a 操作数选择 ----
+`define SELA_RD    1'b0      // reg_a（R[rd]，锁存自 rd/rgs 字段）
+`define SELA_RB    1'b1      // reg_b（R[rb]/R6，锁存自 rs/rb 字段或 SP）
 
 // ---- PC 选择 ----
-`define PC_NEXT   2'b00      // PC + 2
-`define PC_J11    2'b01      // PC + sext(Imm11)
-`define PC_J8     2'b10      // PC + sext(Imm8)
+`define PC_NEXT    3'd0      // PC + 2
+`define PC_J11     3'd1      // PC + sext(Imm11)
+`define PC_J8      3'd2      // PC + sext(Imm8)
+`define PC_REG     3'd3      // reg_a（JR）
+`define PC_MDR     3'd4      // mdr（RET 弹栈）
+`define PC_EPC     3'd5      // EPC（ERET）
+`define PC_VEC     3'd6      // 0xFF00（异常入口）
+
+// ---- 寄存器写口选择 ----
+`define WADDR_RD   2'd0
+`define WADDR_RS   2'd1      // XCHG 第二拍
+`define WADDR_R6   2'd2      // SP 更新
+
+// ---- 寄存器写数据选择 ----
+`define WDATA_ALU  2'd0
+`define WDATA_REGA 2'd1      // XCHG 第二拍
+`define WDATA_MDR  2'd2      // LOD/POP
+`define WDATA_CR   2'd3      // MFC
+
+// ---- 内存地址选择（MEM 状态） ----
+`define MADDR_ALU  1'b0      // 有效地址（ALU 算出）
+`define MADDR_SP   1'b1      // reg_b = R6（POP/RET 读旧栈顶）
+
+// ---- 异常码（excode，规格 4.3） ----
+`define EXC_INT    3'd1      // 外部中断
+`define EXC_TRAP   3'd2      // TRAP
+`define EXC_ALIGN  3'd3      // 地址未对齐
+`define EXC_ILL    3'd4      // 非法指令

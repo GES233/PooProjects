@@ -14,7 +14,7 @@
   - `PBBP/8 Easy/` — 8 位 CPU 的 Verilog 实现（`PC.v`、`IR.v`、`ID.v`、`ALU.v`、`Regfile.v`、`RAM.v`、`Timer.v`、`Immed.v` 等），`README.txt` 描述了模块划分（Registers / Decode / ALU）
   - `PBBP/16 bit CPU/` — 16 位 CPU 的 Verilog 草稿（`RAM.v` 等）
   - `PBBP/PBBP v0.01/`、`PBBP/PBBP v0.02/`、`PBBP/v0.11/`、`PBBP/PBB 16/` — 各版本的 `.circ` 电路图、ISA 文档和结构截图（`.jpg`）。`PBB 16` 是完成度最高的版本，最新电路为 `20171002_CPU.circ`；`PBBP/PBB 16/PBB16_ISA.md` 是由 `00.txt` 整理并经 `20171002_CPU.circ` 静态分析校正的人类可读 PBB16 指令集规格
-  - `PBBP/pbb16-softcore/` — PBB16 的 Verilog 软核项目（中度重设计版，iverilog 仿真优先），ISA 规格草案见 `docs/PBB16_v2_ISA.md`；`rtl/` 为可综合 RTL（第一阶段多周期核已完成），`tb/` 为 testbench。仿真：`iverilog -g2012 -I rtl -o tb/out.vvp rtl/*.v tb/tb_count_loop.v && vvp tb/out.vvp`；ALU 单测：`iverilog -g2012 -I rtl -o tb/alu.vvp rtl/alu.v tb/tb_alu.v && vvp tb/alu.vvp`；`asm/` 为配套单文件 Python 汇编器（仅用标准库）：`python asm/pbb16asm.py 输入.asm -o 输出.hex [--format memh|raw]`（默认 memh，供 testbench 用 `$readmemh` 加载；raw 为 Logisim `v2.0 raw` 映像）
+  - `PBBP/pbb16-softcore/` — PBB16 的 Verilog 软核项目（中度重设计版，iverilog 仿真优先），ISA 规格草案见 `docs/PBB16_v2_ISA.md`；`rtl/` 为可综合 RTL（多周期核，全部 48 条指令已实现：含访存/栈/CALL/RET/MFC/MTC/TRAP/ERET/异常与 4 路外部中断），`tb/` 为 testbench。仿真：`iverilog -g2012 -I rtl -o tb/out.vvp rtl/*.v tb/tb_count_loop.v && vvp tb/out.vvp`；ALU 单测：`iverilog -g2012 -I rtl -o tb/alu.vvp rtl/alu.v tb/tb_alu.v && vvp tb/alu.vvp`；第二阶段系统测试（先汇编再跑）：`python asm/pbb16asm.py asm/test_phase2.asm -o asm/test_phase2.hex && iverilog -g2012 -I rtl -o tb/phase2.vvp rtl/*.v tb/tb_phase2.v && vvp tb/phase2.vvp`；`asm/` 为配套单文件 Python 汇编器（仅用标准库）：`python asm/pbb16asm.py 输入.asm -o 输出.hex [--format memh|raw]`（默认 memh，供 testbench 用 `$readmemh` 加载；raw 为 Logisim `v2.0 raw` 映像）
   - `PBBP/内存映像/`、`PBBP/PBB 16/mem/` — Logisim 内存映像文件（`v2.0 raw` 十六进制格式）
   - 根级散落的 `*.circ`（`2333.circ`、`Stack.circ`、`TEST.circ` 等）为实验性电路
 - `新建文件夹/` — 较新的设计：`lambdaCPU v4.circ`（含配套的 `lambdaCPU instructionset.xlsx` 指令集表格）、`muCPU[rev1].circ`、`FPU_ro.circ`
@@ -52,6 +52,7 @@
 
 - `iverilog -g2012 -Wall -I rtl -o tb/out.vvp rtl/*.v tb/tb_count_loop.v && vvp tb/out.vvp`
 - `iverilog -g2012 -Wall -I rtl -o tb/alu.vvp rtl/alu.v tb/tb_alu.v && vvp tb/alu.vvp`
+- `python asm/pbb16asm.py asm/test_phase2.asm -o asm/test_phase2.hex && iverilog -g2012 -Wall -I rtl -o tb/phase2.vvp rtl/*.v tb/tb_phase2.v && vvp tb/phase2.vvp`
 
 ## 修改时的注意事项
 

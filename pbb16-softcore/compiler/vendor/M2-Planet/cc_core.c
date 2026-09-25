@@ -1297,7 +1297,13 @@ void additive_expr_a(void)
 
 void additive_expr_stub_b(void)
 {
-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+	if(PBB16 == Architecture)
+	{
+		/* common_recursion leaves the left operand in R1, the right in R0. */
+		general_recursion(additive_expr_a, "ADD R0, R1\n", "+", additive_expr_stub_b);
+		general_recursion(additive_expr_a, "SUB R1, R0\nMOV R0, R1\n", "-", additive_expr_stub_b);
+	}
+	else if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
 	{
 		arithmetic_recursion(additive_expr_a, "ADD R0 R1 R0\n", "ADDU R0 R1 R0\n", "+", additive_expr_stub_b);
 		arithmetic_recursion(additive_expr_a, "SUB R0 R1 R0\n", "SUBU R0 R1 R0\n", "-", additive_expr_stub_b);

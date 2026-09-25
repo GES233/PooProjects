@@ -1,5 +1,6 @@
-// C stage 1 ABI: crt0 -> CALL main -> return value in R0 -> HLT at 0x0006.
-// vvp ... +image=path.hex +expected=002a
+// C ABI: crt0 -> CALL main -> R0 result -> HLT at 0x0006.
+// vvp ... +image=path.hex +expected=002a +pushes=2 +depth=2
+// Counts/depth are independent expectations supplied by the test, not assembly.
 `timescale 1ns/1ps
 module tb_c_return;
     reg clk = 0;
@@ -18,20 +19,50 @@ module tb_c_return;
     );
 
     integer writes = 0;
+    integer reads = 0;
+    integer stack_words = 0;
+    integer max_depth = 0;
+    integer expected_pushes = 0;
+    integer expected_depth = 0;
+    reg [15:0] stack_top = 16'hEFFE;
     always @(posedge clk) begin
         if (rst_n && (we || re)) begin
             if (addr[21:16] !== 6'd0 || far_access !== 0 || mape !== 0)
                 $fatal(1, "unexpected physical mapping at %h", addr);
             if (addr >= 22'h00F000)
                 $fatal(1, "unexpected MMIO/vector access at %h", addr);
+            if (addr >= 22'h00E000) begin
+                if (dut.state !== 3'd6 || size !== 1'b1 || addr[0] !== 1'b0)
+                    $fatal(1, "invalid stack access at %h", addr);
+            end else if (we || dut.state == 3'd6)
+                $fatal(1, "unexpected code/data access at %h", addr);
         end
         if (rst_n && we) begin
-            // Only CALL's 16-bit return address should touch memory in stage 1.
-            if (addr !== 22'h00EFFC || size !== 1'b1 || wdata !== 16'h0006)
-                $fatal(1, "unexpected stack write addr=%h size=%b data=%h", addr, size, wdata);
+            if (addr !== {6'd0, stack_top - 16'd2})
+                $fatal(1, "non-LIFO stack write at %h (top=%h)", addr, stack_top);
+            if (writes == 0) begin
+                if (dut.is_call !== 1 || addr !== 22'h00EFFC || wdata !== 16'h0006)
+                    $fatal(1, "incorrect CALL return address");
+            end else if (dut.is_push !== 1 || stack_words < 1 || addr >= 22'h00EFFC)
+                $fatal(1, "expected expression PUSH below CALL return address");
+            stack_top = stack_top - 16'd2;
+            stack_words = stack_words + 1;
+            if (stack_words - 1 > max_depth) max_depth = stack_words - 1;
             mem[addr[15:0]] <= wdata[7:0];
             mem[addr[15:0] + 16'd1] <= wdata[15:8];
             writes = writes + 1;
+        end
+        if (rst_n && re && addr >= 22'h00E000) begin
+            if (stack_words < 1 || addr !== {6'd0, stack_top})
+                $fatal(1, "non-LIFO stack read at %h (top=%h)", addr, stack_top);
+            if (stack_words == 1) begin
+                if (dut.is_ret !== 1 || rdata !== 16'h0006)
+                    $fatal(1, "RET must read the original CALL return address");
+            end else if (dut.is_pop !== 1)
+                $fatal(1, "expected expression POP");
+            stack_top = stack_top + 16'd2;
+            stack_words = stack_words - 1;
+            reads = reads + 1;
         end
     end
 
@@ -42,6 +73,8 @@ module tb_c_return;
         if (!$value$plusargs("image=%s", image_path) ||
             !$value$plusargs("expected=%h", expected))
             $fatal(1, "requires +image=path.hex +expected=hhhh");
+        if ($value$plusargs("pushes=%d", expected_pushes)) begin end
+        if ($value$plusargs("depth=%d", expected_depth)) begin end
         fd = $fopen(image_path, "r");
         if (fd == 0) $fatal(1, "cannot open program image");
         $fclose(fd);
@@ -50,7 +83,7 @@ module tb_c_return;
         repeat (3) @(negedge clk);
         rst_n = 1;
         cycles = 0;
-        while (!halted && cycles < 200) begin
+        while (!halted && cycles < 20000) begin
             @(negedge clk);
             cycles = cycles + 1;
         end
@@ -59,15 +92,19 @@ module tb_c_return;
             $fatal(1, "R0=%h, expected %h", dut.rf.regs[0], expected);
         if (dut.rf.regs[6] !== 16'hEFFE || dut.pc !== 16'h0006)
             $fatal(1, "unbalanced stack or wrong return PC: SP=%h PC=%h", dut.rf.regs[6], dut.pc);
-        if (writes != 1 || mem[16'hEFFC] !== 8'h06 || mem[16'hEFFD] !== 0)
+        if (writes != expected_pushes + 1 || reads != writes || stack_words != 0 ||
+            stack_top !== 16'hEFFE || max_depth != expected_depth)
+            $fatal(1, "stack mismatch writes=%0d reads=%0d depth=%0d (expected pushes=%0d depth=%0d)",
+                   writes, reads, max_depth, expected_pushes, expected_depth);
+        if (mem[16'hEFFC] !== 8'h06 || mem[16'hEFFD] !== 0)
             $fatal(1, "CALL return address / little-endian stack mismatch");
         if (dut.cr_exl !== 0 || dut.cr_ie !== 0)
             $fatal(1, "unexpected exception/interrupt state");
         for (i = 1; i < 8; i = i + 1)
-            if (i != 6 && dut.rf.regs[i] !== 0)
-                $fatal(1, "stage 1 unexpectedly clobbered R%0d", i);
-        $display("== tb_c_return: PASS (R0=%h SP=%h PC=%h cycles=%0d) ==",
-                 dut.rf.regs[0], dut.rf.regs[6], dut.pc, cycles);
+            if (i != 6 && (i != 1 || expected_pushes == 0) && dut.rf.regs[i] !== 0)
+                $fatal(1, "unexpectedly clobbered R%0d", i);
+        $display("== tb_c_return: PASS (R0=%h SP=%h PC=%h pushes=%0d depth=%0d cycles=%0d) ==",
+                 dut.rf.regs[0], dut.rf.regs[6], dut.pc, writes - 1, max_depth, cycles);
         $finish;
     end
 endmodule

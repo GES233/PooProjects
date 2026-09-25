@@ -21,8 +21,9 @@ def command(argv):
     return result.stdout
 
 
-def simulate(image, expected):
-    output = command(["vvp", OUT / "c_return.vvp", f"+image={image}", f"+expected={expected:04x}"])
+def simulate(image, expected, *, pushes=0, depth=0):
+    output = command(["vvp", OUT / "c_return.vvp", f"+image={image}",
+                      f"+expected={expected & 0xffff:04x}", f"+pushes={pushes}", f"+depth={depth}"])
     if "== tb_c_return: PASS" not in output or any(s in output for s in ("FAIL", "ERROR", "WARNING")):
         raise RuntimeError(output)
     print(image.stem, next(line for line in output.splitlines() if "PASS" in line))
@@ -62,7 +63,7 @@ def run_tests():
         "int main(void) { return -1; }", "int main(void) { return 32768; }",
         "int main(void) { return 65536; }", "int main(void) { return 9999999999999999999999999999; }",
         "int main(void) { return 08; }", "int main(void) { return 0x; }",
-        "int main(void) { return 42u; }", "int main(void) { return 1 + 2; }",
+        "int main(void) { return 42u; }", "int main(void) { return 1 * 2; }",
         "int main(void) { int a; return 42; }", "int main(void) { if(1) return 42; return 0; }",
         "int main(void) { return; }", "int main(void) { return 42 }",
         "int main(int x) { return 42; }", "int other(void) { return 42; }",
@@ -75,7 +76,7 @@ def run_tests():
         source.write_text(text, encoding="utf-8")
         result = subprocess.run([str(binary), "-A", "pbb16", "-f", str(source)],
                                 capture_output=True, text=True, timeout=5)
-        if result.returncode != 1 or "PBB16 stage 1" not in result.stderr or result.stdout:
+        if result.returncode != 1 or "PBB16:" not in result.stderr or result.stdout:
             raise RuntimeError(f"unsupported input not cleanly rejected: {text!r}\n{result}")
 
     # Failed compilation must not replace a previous successful build.

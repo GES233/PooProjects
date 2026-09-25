@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PBB16 stage 1: C -> M2-Planet target -> startup + assembly -> memh."""
+"""PBB16 C -> M2-Planet target -> startup + assembly -> memh."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -41,7 +41,7 @@ def compile_file(source, output, binary=None):
     if errors:
         raise ValueError("\n".join(f"assembly:{error.line_no}: {error.msg}" for error in errors))
     if not memory or min(memory) != 0 or max(memory) >= 0xE000:
-        raise ValueError("stage 1 program must fit below the reserved stack area 0xE000")
+        raise ValueError("program must fit below the reserved stack area 0xE000")
     output.parent.mkdir(parents=True, exist_ok=True)
     function_path.write_text(result.stdout, encoding="utf-8")
     assembly_path.write_text(assembly, encoding="utf-8")

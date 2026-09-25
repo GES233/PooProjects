@@ -1,4 +1,4 @@
-/* PBB16 stage-1 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-2 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  */
@@ -8,9 +8,9 @@
 static void unsupported(struct token_list* token, char* message)
 {
     if(token != NULL) line_error_token(token);
-    fputs("PBB16 stage 1: ", stderr);
+    fputs("PBB16: ", stderr);
     fputs(message, stderr);
-    fputs("\nSupported: int main(void) { return N; }, N = 0..32767.\n", stderr);
+    fputs("\nSupported: int main(void) { return EXPR; }, literals 0..32767, binary +/-, parentheses.\n", stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -27,23 +27,8 @@ static void expect(struct token_list** token, char* text)
     *token = (*token)->next;
 }
 
-/* A capability gate, not a substitute parser: the original M2 parser still
- * processes the accepted tokens and invokes the immediate/return emitters.
- * Before expanding the backend, expand this gate and its negative tests too.
- * No preprocessing: otherwise #if/#define could bypass this milestone's scope.
- */
-void pbb16_validate_program(void)
+static int validate_literal(struct token_list* token)
 {
-    struct token_list* token = global_token;
-    expect(&token, "int");
-    expect(&token, "main");
-    expect(&token, "(");
-    skip_newlines(&token);
-    if(token != NULL && match(token->s, "void")) token = token->next;
-    expect(&token, ")");
-    expect(&token, "{");
-    expect(&token, "return");
-    skip_newlines(&token);
     if(token == NULL) unsupported(token, "missing integer literal");
 
     /* Check digits and range before upstream strtoint: do not silently accept
@@ -75,7 +60,73 @@ void pbb16_validate_program(void)
     }
     /* M2libc strtoint only recognizes lowercase 0x; preserve source otherwise. */
     if(s[0] == '0' && s[1] == 'X') s[1] = 'x';
-    token = token->next;
+    return value;
+}
+
+static int validate_expression(struct token_list** token, int depth, int* operations);
+
+static int validate_primary(struct token_list** token, int depth, int* operations)
+{
+    skip_newlines(token);
+    if(*token != NULL && match((*token)->s, "("))
+    {
+        /* Bound both host parser recursion and target temporary-stack use. */
+        if(depth >= 64) unsupported(*token, "parentheses exceed 64 levels");
+        *token = (*token)->next;
+        int value = validate_expression(token, depth + 1, operations);
+        expect(token, ")");
+        return value;
+    }
+    int value = validate_literal(*token);
+    *token = (*token)->next;
+    return value;
+}
+
+/* expr = primary { ("+" | "-") primary }; primary = literal | "(" expr ")".
+ * Evaluate only to reject signed overflow; do not replace tokens or fold code.
+ * The M2 parser still generates every load, push, pop and arithmetic operation.
+ */
+static int validate_expression(struct token_list** token, int depth, int* operations)
+{
+    int value = validate_primary(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && (match((*token)->s, "+") || match((*token)->s, "-")))
+    {
+        struct token_list* operator_token = *token;
+        int subtract = match(operator_token->s, "-");
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 binary operations");
+        *token = (*token)->next;
+        int right = validate_primary(token, depth, operations);
+        /* Check before adding/subtracting: safe even on a 16-bit C host. */
+        if((!subtract && ((right > 0 && value > 32767 - right) ||
+                          (right < 0 && value < (-32767 - 1) - right))) ||
+           (subtract && ((right > 0 && value < (-32767 - 1) + right) ||
+                         (right < 0 && value > 32767 + right))))
+            unsupported(operator_token, "intermediate result exceeds signed 16-bit range");
+        if(subtract) value = value - right;
+        else value = value + right;
+        skip_newlines(token);
+    }
+    return value;
+}
+
+/* Check capabilities before preprocessing so directives cannot bypass the gate.
+ * Keep global_token in place for the original M2 parser after validation.
+ */
+void pbb16_validate_program(void)
+{
+    struct token_list* token = global_token;
+    int operations = 0;
+    expect(&token, "int");
+    expect(&token, "main");
+    expect(&token, "(");
+    skip_newlines(&token);
+    if(token != NULL && match(token->s, "void")) token = token->next;
+    expect(&token, ")");
+    expect(&token, "{");
+    expect(&token, "return");
+    validate_expression(&token, 0, &operations);
     expect(&token, ";");
     expect(&token, "}");
     skip_newlines(&token);
@@ -84,8 +135,8 @@ void pbb16_validate_program(void)
 
 void pbb16_write_load_immediate(int reg, int value)
 {
-    require(reg == REGISTER_ZERO, "PBB16 stage 1: only R0 immediate results implemented\n");
-    require(value >= 0 && value <= 32767, "PBB16 stage 1: immediate out of range\n");
+    require(reg == REGISTER_ZERO, "PBB16: only R0 immediate results implemented\n");
+    require(value >= 0 && value <= 32767, "PBB16: immediate out of range\n");
     if(value <= 255)
     {
         emit_to_string("MOVI R0, ");

@@ -1,0 +1,57 @@
+******** PBBP ********
+
+GES 2015/10/24 10:42
+
+
+Decode
+****************
+OPCode    |ALUOP   |  |OP_s|
+0000 NOP  |000 MOV |R |00  |
+0001 MOV  |000 MOV |R |00  |
+0010 MOVI |000 MOV |I |01  |
+0011 LOD  |000 MOV |I |00  |
+0100 STR  |000 MOV |I |00  |
+0101 JMP  |000 MOV |I |00  |
+0110 ADD  |001 ADD |R |00  |
+0111 BE   |011 CMP |I |00  |
+1000 BNE  |011 CMP |I |00  |
+1001 BEZ  |011 CMP |I |01  |
+1010 SUB  |010 SUB |R |00  |
+1011 S    |100 S   |I |01  |
+1100 AND  |101 AND |R |00  |
+1101 OR   |110 OR  |R |00  |
+1110 NOT  |111 NOT |R |00  |
+1111 HLT  |000 MOV |R |00  |
+
+
+
+
+            =>HLT:  PC_clk = 0
+            =>NOP:  -
+              MOV
+              NOT
+              OR
+              AND
+              SUB
+            =>ADD:
+                                          |Registers_clk|
+                      |ALUOP                            |
+               02      03   04   05     06             07
+        =>(R)
+PC =>|IR| 
+00    01 =>  |(I)PC|=>|Immed|
+               02      03   =>JMP
+                              BE
+                              BNE
+                              BEZ:
+                              |jmp_ce         |
+                              04     05  06  07
+                              |ALU| |PC|
+                              =>Load/Store:
+                              |  ls                       |
+                              04 05      06              07
+                                |Ram_clk|   |Registers_clk|
+                            =>S:
+                             04 05 06 07
+                                      |Registers_clk|
+****************

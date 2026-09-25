@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pbb16asm.py — PBB16 v2 简易汇编器（两遍扫描，仅用标准库）
+"""pbb16asm.py — PBB16 v3 简易汇编器（两遍扫描，仅用标准库）
 
 用法：
     python asm/pbb16asm.py 输入.asm -o 输出文件 [--format memh|raw]
@@ -15,6 +15,8 @@
 - 伪指令：.org 地址 / .word 值[,...] / .byte 值[,...]
 - 跳转类操作数为标签或数字偏移（相对本指令自身地址，汇编器检查范围）
 - JCC 通用形 `JCC Z, 0, loop`；糖：JZ/JNZ/JS/JNS/JC/JNC/JV/JNV
+- v3 远访存 FLOD.W/FSTR.W/FLOD.B/FSTR.B：与 M 型同写法（off(Rb)，Rb 指寄存器对）
+- 控制寄存器名：ZERO/BANK0-3/STATUS/CAUSE/EPC/PRID（或 CRn / 纯数字）
 """
 
 import argparse
@@ -44,6 +46,10 @@ S_FCT = {"SHL": 0, "SHR": 1, "SAR": 2, "ROL": 3, "ROR": 4}
 # M 型：op[15:11] | rd[10:8] | rb[7:5] | Imm5[4:0]（sext，±16）
 M_OP = {"LOD.W": 0x6000, "STR.W": 0x6800, "LOD.B": 0x7000, "STR.B": 0x7800}
 
+# 远访存（v3，M 型布局）：物理地址 = {R[rb|1][5:0], R[rb&~1]} + sext(Imm5)，
+# 绕过 banking 与 MMIO，直达 4MB 物理 RAM（规格 3.6b）
+FM_OP = {"FLOD.W": 0x0800, "FSTR.W": 0x1000, "FLOD.B": 0x1800, "FSTR.B": 0x3000}
+
 # A 型：op[15:11] | rgs[10:8]
 A_OP = {"PUSH": 0x8000, "POP": 0x8800, "JR": 0x9000}
 
@@ -61,7 +67,8 @@ JCC_SUGAR = {  # 助记符 -> (flg, cm)
 }
 
 # 控制寄存器名（也接受 CRn 或纯数字 0-15）
-CR_NAME = {"ZERO": 0, "STATUS": 8, "CAUSE": 9, "EPC": 11, "PRID": 15}
+CR_NAME = {"ZERO": 0, "BANK0": 4, "BANK1": 5, "BANK2": 6, "BANK3": 7,
+           "STATUS": 8, "CAUSE": 9, "EPC": 11, "PRID": 15}
 
 LABEL_RE = re.compile(r"^([A-Za-z_.$][\w.$]*):")
 REG_RE = re.compile(r"^[Rr]([0-7])$")
@@ -239,7 +246,7 @@ def encode_instr(item, labels):
         sh = check_range(parse_num(ops[1], line_no), 0, 15, line_no, "移位量")
         return 0x4800 | (rd << 8) | (sh << 4) | S_FCT[m]
 
-    if m in M_OP:
+    if m in M_OP or m in FM_OP:
         if len(ops) not in (2, 3):
             raise AsmError(line_no, "%s 操作数形式应为 'Rd, off(Rb)' 或 'Rd, Rb, off'" % m)
         rd = parse_reg(ops[0], line_no)
@@ -252,7 +259,8 @@ def encode_instr(item, labels):
             raise AsmError(line_no, "%s 操作数形式应为 'Rd, off(Rb)' 或 'Rd, Rb, off'" % m)
         rb = parse_reg(rb_tok, line_no)
         off = check_range(parse_num(off_tok, line_no), -16, 15, line_no, "Imm5 偏移")
-        return M_OP[m] | (rd << 8) | (rb << 5) | (off & 0x1F)
+        tbl = M_OP if m in M_OP else FM_OP
+        return tbl[m] | (rd << 8) | (rb << 5) | (off & 0x1F)
 
     if m in A_OP:
         need(1)

@@ -43,6 +43,10 @@ module decoder (
     output wire is_str_w,
     output wire is_lod_b,
     output wire is_str_b,
+    output wire is_flod_w,
+    output wire is_fstr_w,
+    output wire is_flod_b,
+    output wire is_fstr_b,
     output wire is_push,
     output wire is_pop,
     output wire is_jr,
@@ -88,6 +92,10 @@ module decoder (
     assign is_str_w  = (opcode == `OP_STRW);
     assign is_lod_b  = (opcode == `OP_LODB);
     assign is_str_b  = (opcode == `OP_STRB);
+    assign is_flod_w = (opcode == `OP_FLODW);
+    assign is_fstr_w = (opcode == `OP_FSTRW);
+    assign is_flod_b = (opcode == `OP_FLODB);
+    assign is_fstr_b = (opcode == `OP_FSTRB);
     assign is_push   = (opcode == `OP_PUSH);
     assign is_pop    = (opcode == `OP_POP);
     assign is_jr     = (opcode == `OP_JR);

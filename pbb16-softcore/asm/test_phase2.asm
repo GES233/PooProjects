@@ -80,7 +80,7 @@ fail_e:
 ; ---------- g) MFC PRID + MTC/MFC Status 往返 ----------
         MFC   R0, PRID
         MOVUI R1, 0x04
-        ORI   R1, 0x02          ; R1 = 0x0402
+        ORI   R1, 0x03          ; R1 = 0x0403（v3：PRID version=3）
         CMP   R0, R1
         JNZ   fail_g
         MOVI  R1, 0xF7          ; IM=1111 EXL=1 IE=1 EM=1
@@ -183,7 +183,8 @@ irq_wait:
 ; ---------- j) 非法指令测试体 ----------
         .org 0x0200
 illegal_test:
-        .word 0x0801            ; 0x0200 主 opcode 00001 未分配 → excode=4
+        .word 0x3801            ; 0x0200 主 opcode 00111 未分配 → excode=4
+                                ;（v3 起 00001-00011/00110 已分配给远访存）
         J     after_illegal     ; 不应到达（handler JR 到 0x0210）
 
         .org 0x0210

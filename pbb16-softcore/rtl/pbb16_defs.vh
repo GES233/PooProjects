@@ -23,6 +23,20 @@
 `define OP_SYS    5'b11110   // TRAP/ERET（fct3 区分）
 `define OP_HLT    5'b11111   // HLT
 
+// ---- 远访存（v3，M 型布局，寄存器对拼 22 位物理地址，规格 3.6b） ----
+`define OP_FLODW  5'b00001   // FLOD.W
+`define OP_FSTRW  5'b00010   // FSTR.W
+`define OP_FLODB  5'b00011   // FLOD.B
+`define OP_FSTRB  5'b00110   // FSTR.B
+
+// ---- 控制寄存器号（规格 4.2） ----
+`define CR_BANK0  4'd4
+`define CR_BANK1  4'd5
+`define CR_BANK2  4'd6
+`define CR_BANK3  4'd7
+`define CR_STATUS 4'd8
+`define PRID_VAL  16'h0403   // type=0x10, version=3
+
 // ---- R 型 fct5（instr[4:0]） ----
 `define F_ADD     5'b00000
 `define F_SUB     5'b00001

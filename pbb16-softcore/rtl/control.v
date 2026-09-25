@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-// control.v — PBB16 v2 多周期控制器（FSM），第二阶段：全部 48 条指令
+// control.v — PBB16 v3 多周期控制器（FSM），全部 52 条指令
 // 状态：FETCH -> DECODE -> EXEC -> (MEM) -> WB -> (WB2) -> FETCH
 //   WB2   ：XCHG / POP 需要第二次寄存器写
 //   EXC   ：异常入口气泡拍（异常寄存器与 PC 在进入 EXC 的沿上已锁存）
@@ -31,6 +31,10 @@ module control (
     input  wire       is_str_w,
     input  wire       is_lod_b,
     input  wire       is_str_b,
+    input  wire       is_flod_w,
+    input  wire       is_fstr_w,
+    input  wire       is_flod_b,
+    input  wire       is_fstr_b,
     input  wire       is_push,
     input  wire       is_pop,
     input  wire       is_jr,
@@ -100,15 +104,15 @@ module control (
     wire is_cmp  = is_rtype && (fct5 == `F_CMP);
     wire is_cmpu = is_rtype && (fct5 == `F_CMPU);
 
-    // 访存类细分
-    wire is_load  = is_lod_w || is_lod_b || is_pop || is_ret;
-    wire is_store = is_str_w || is_str_b || is_push || is_call;
+    // 访存类细分（v3：远访存并入 M 型流程）
+    wire is_far   = is_flod_w || is_fstr_w || is_flod_b || is_fstr_b;
+    wire is_load  = is_lod_w || is_lod_b || is_flod_w || is_flod_b || is_pop || is_ret;
+    wire is_store = is_str_w || is_str_b || is_fstr_w || is_fstr_b || is_push || is_call;
     wire is_mmem  = is_lod_w || is_lod_b || is_str_w || is_str_b;
 
     // 非法指令：未分配的主 opcode（规格 7.2：已分配指令的保留位不查）
-    wire is_illegal = (opcode == 5'b00001) || (opcode == 5'b00010)
-                    || (opcode == 5'b00011) || (opcode == 5'b00110)
-                    || (opcode == 5'b00111) || (opcode == 5'b10011);
+    wire is_illegal = (opcode == 5'b00111) || (opcode == 5'b01010)
+                    || (opcode == 5'b01011) || (opcode == 5'b10011);
 
     // 外部中断挂起（指令边界 = FETCH 拍采样）
     wire irq_pending = cr_ie && !cr_exl && ((irq & ~cr_im) != 4'b0000);
@@ -203,9 +207,9 @@ module control (
         end else if (is_movui) begin
             alu_op = `ALU_MOVUI;
             sel_b  = `SELB_IMM8Z;
-        end else if (is_mmem) begin
+        end else if (is_mmem || is_far) begin
             alu_op = `ALU_ADD;                  // 有效地址 = R[rb] + sext(Imm5)
-            sel_a  = `SELA_RB;
+            sel_a  = `SELA_RB;                  // （远访存另由顶层 22 位加法器拼物理地址）
             sel_b  = `SELB_IMM5S;
         end else if (is_push || is_call) begin
             alu_op = `ALU_SUB;                  // SP - 2
@@ -263,7 +267,7 @@ module control (
 
             ST_MEM: begin
                 mem_addr_sel = (is_pop || is_ret) ? `MADDR_SP : `MADDR_ALU;
-                mem_size     = !(is_lod_b || is_str_b); // 仅字节访存为 0
+                mem_size     = !(is_lod_b || is_str_b || is_flod_b || is_fstr_b);
                 if (is_load) begin
                     mem_re = 1'b1;
                     mdr_we = 1'b1;              // 拍沿锁存读数据
@@ -281,7 +285,7 @@ module control (
                     is_addi || is_andi || is_ori) begin
                     reg_we = 1'b1;
                 end
-                if (is_lod_w || is_lod_b) begin
+                if (is_lod_w || is_lod_b || is_flod_w || is_flod_b) begin
                     reg_we       = 1'b1;
                     rf_wdata_sel = `WDATA_MDR;
                 end

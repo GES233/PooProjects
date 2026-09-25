@@ -15,16 +15,17 @@ module tb_count_loop_asm;
     // ---- 行为级内存：64K 字节，小端 ----
     reg [7:0] mem [0:65535];
 
-    wire [15:0] mem_addr, mem_wdata, mem_rdata;
+    wire [21:0] mem_addr;   // v3：22 位物理地址（直通态低 16 位 == 逻辑地址）
+    wire [15:0] mem_wdata, mem_rdata;
     wire        mem_we, mem_re, mem_size, halted;
 
-    assign mem_rdata = mem_size ? {mem[mem_addr + 16'd1], mem[mem_addr]}
-                                : {8'h00, mem[mem_addr]};
+    assign mem_rdata = mem_size ? {mem[mem_addr[15:0] + 16'd1], mem[mem_addr[15:0]]}
+                                : {8'h00, mem[mem_addr[15:0]]};
 
     always @(posedge clk) begin
         if (mem_we) begin
-            mem[mem_addr] <= mem_wdata[7:0];
-            if (mem_size) mem[mem_addr + 16'd1] <= mem_wdata[15:8];
+            mem[mem_addr[15:0]] <= mem_wdata[7:0];
+            if (mem_size) mem[mem_addr[15:0] + 16'd1] <= mem_wdata[15:8];
         end
     end
 
@@ -32,6 +33,7 @@ module tb_count_loop_asm;
         .clk(clk), .rst_n(rst_n),
         .mem_addr(mem_addr), .mem_wdata(mem_wdata),
         .mem_we(mem_we), .mem_re(mem_re), .mem_size(mem_size),
+        .mem_far(), .mape_o(),
         .mem_rdata(mem_rdata), .irq(4'b0000), .halted(halted)
     );
 

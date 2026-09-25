@@ -1,23 +1,30 @@
 `timescale 1ns/1ps
-// bus.v — PBB16 v2 地址译码总线（规格第 9 节，纯组合、可综合）
+// bus.v — PBB16 v3 地址译码总线（规格第 9 节，纯组合、可综合）
 //
-// 地址映射：
-//   0x0000-0xEFFF  RAM（56KB）
-//   0xF000-0xFEFF  MMIO 外设区（4KB，每设备 16 字节，槽 i 基址 0xF000+i*0x10）
-//   0xFF00-0xFFFF  RAM 保留页（256B，异常向量 0xFF00 在 RAM）
+// 内核输出 22 位物理地址（banking 翻译在核内完成，规格第 8 节）：
+//   MAPE=0 直通：phys = {6'h00, 逻辑地址}，地址映射与 v2 相同：
+//     0x0000-0xEFFF  RAM（56KB）
+//     0xF000-0xFEFF  MMIO 外设区（4KB，每设备 16 字节，槽 i 基址 0xF000+i*0x10）
+//     0xFF00-0xFFFF  RAM 保留页（256B，异常向量 0xFF00 在 RAM）
+//   MAPE=1 映射：整个 64KB 逻辑空间（含 MMIO 窗口）都已被核内重映射到 4MB
+//     物理 RAM，本模块见到的是重映射后的物理地址 —— MMIO 因此天然不可达
+//     （mape 输入门控译码，防 bank 号 = 0 时物理地址巧合落进 0xF000 窗口）。
+//   mem_far=1（远访存）：直达物理 RAM，绕过 MMIO 译码与 banking。
 // MMIO 空洞（0xF080-0xFEFF，槽 8 起未接设备）：读返回 0、写忽略，不异常。
 // 对齐规则与 RAM 一致：字访问奇地址的未对齐异常由内核判定，本模块不重复。
 module bus (
-    // 内核侧
-    input  wire [15:0] mem_addr,
+    // 内核侧（22 位物理地址）
+    input  wire [21:0] mem_addr,
     input  wire [15:0] mem_wdata,
     input  wire        mem_we,
     input  wire        mem_re,
     input  wire        mem_size,   // 1 = 字，0 = 字节
+    input  wire        mem_far,    // 1 = 远访存（绕过 MMIO）
+    input  wire        mape,       // Status.MAPE（1 = 映射态，MMIO 不可达）
     output wire [15:0] mem_rdata,
 
-    // RAM 侧（两段地址在 RAM 模型内部统一为 64KB 线性空间）
-    output wire [15:0] ram_addr,
+    // RAM 侧（4MB 物理空间）
+    output wire [21:0] ram_addr,
     output wire [15:0] ram_wdata,
     output wire        ram_we,
     output wire        ram_re,
@@ -41,8 +48,10 @@ module bus (
     input  wire [15:0] dev7_rdata
 );
 
-    // 0xF000-0xFEFF：高 4 位全 1 且 bit11:8 不全 1（0xFF00 起归 RAM）
-    wire is_mmio = (mem_addr[15:12] == 4'hF) && (mem_addr[11:8] != 4'hF);
+    // 0xF000-0xFEFF：高 4 位全 1 且 bit11:8 不全 1（0xFF00 起归 RAM）；
+    // 仅直通态（mape=0）的近访问才可能是 MMIO
+    wire is_mmio = !mem_far && !mape
+                && (mem_addr[15:12] == 4'hF) && (mem_addr[11:8] != 4'hF);
     wire is_hole = is_mmio && mem_addr[7];          // 0xF080-0xFEFF
     wire [2:0] slot  = mem_addr[6:4];               // 16 字节一个槽
 

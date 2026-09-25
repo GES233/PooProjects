@@ -16,8 +16,9 @@ module tb_bus_uart;
     always #5 clk = ~clk;
 
     // ---- 内核 <-> 总线 ----
-    wire [15:0] mem_addr, mem_wdata, mem_rdata;
-    wire        mem_we, mem_re, mem_size;
+    wire [21:0] mem_addr;   // v3：22 位物理地址
+    wire [15:0] mem_wdata, mem_rdata;
+    wire        mem_we, mem_re, mem_size, mem_far, mape;
     wire [3:0]  core_irq;
     wire        halted;
 
@@ -25,11 +26,13 @@ module tb_bus_uart;
         .clk(clk), .rst_n(rst_n),
         .mem_addr(mem_addr), .mem_wdata(mem_wdata),
         .mem_we(mem_we), .mem_re(mem_re), .mem_size(mem_size),
+        .mem_far(mem_far), .mape_o(mape),
         .mem_rdata(mem_rdata), .irq(core_irq), .halted(halted)
     );
 
     // ---- 总线 ----
-    wire [15:0] ram_addr, ram_wdata, ram_rdata;
+    wire [21:0] ram_addr;
+    wire [15:0] ram_wdata, ram_rdata;
     wire        ram_we, ram_re, ram_size;
     wire [7:0]  dev_sel;
     wire [3:0]  dev_addr;
@@ -40,6 +43,7 @@ module tb_bus_uart;
     bus bus_i (
         .mem_addr(mem_addr), .mem_wdata(mem_wdata),
         .mem_we(mem_we), .mem_re(mem_re), .mem_size(mem_size),
+        .mem_far(mem_far), .mape(mape),
         .mem_rdata(mem_rdata),
         .ram_addr(ram_addr), .ram_wdata(ram_wdata),
         .ram_we(ram_we), .ram_re(ram_re), .ram_size(ram_size),
@@ -57,14 +61,15 @@ module tb_bus_uart;
     assign core_irq = {3'b000, uart_irq};   // UART 接 irq[0]
 
     // ---- 行为级 RAM：64K 字节，小端（两段地址在内部统一） ----
+    // v3：bus 输出 22 位物理地址，本 TB 直通态运行，取低 16 位索引
     reg [7:0] mem [0:65535];
 
-    assign ram_rdata = ram_size ? {mem[ram_addr + 16'd1], mem[ram_addr]}
-                                : {8'h00, mem[ram_addr]};
+    assign ram_rdata = ram_size ? {mem[ram_addr[15:0] + 16'd1], mem[ram_addr[15:0]]}
+                                : {8'h00, mem[ram_addr[15:0]]};
     always @(posedge clk) begin
         if (ram_we) begin
-            mem[ram_addr] <= ram_wdata[7:0];
-            if (ram_size) mem[ram_addr + 16'd1] <= ram_wdata[15:8];
+            mem[ram_addr[15:0]] <= ram_wdata[7:0];
+            if (ram_size) mem[ram_addr[15:0] + 16'd1] <= ram_wdata[15:8];
         end
     end
 

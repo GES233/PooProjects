@@ -13,7 +13,7 @@
 // 控制寄存器（规格 4.2）：CR0=ZERO、CR4–CR7=BANK0–3、CR8=Status、CR9=Cause、
 // CR11=EPC、CR15=PRID(0x0403)。
 // 异常模型（规格 4.3）：EPC←PC、excode←码、EXL←1、MAPS←MAPE、MAPE←0、PC←0xFF00；
-// ERET 恢复 PC/EXL/MAPE。
+// 异常入口另保存 Z/S/C/V；ERET 恢复 PC/EXL/MAPE 与 Z/S/C/V。
 `include "pbb16_defs.vh"
 
 module pbb16 (
@@ -44,6 +44,7 @@ module pbb16 (
     reg  [15:0] reg_c;     // DECODE 锁存的远地址对高位 R[{rb[2:1],1'b1}]
     reg  [15:0] mdr;       // MEM 拍锁存的内存读数据
     reg         fz, fs, fc, fv;   // 标志寄存器 Z/S/C/V
+    reg  [3:0]  saved_flags;      // 单层异常影子，与 EPC 一同覆盖；不暴露给 MFC/MTC
 
     // ---- 控制寄存器（规格 4.2） ----
     reg  [7:0]  cr_bank0, cr_bank1, cr_bank2, cr_bank3;  // CR4–CR7 BANK0–3
@@ -253,6 +254,7 @@ module pbb16 (
             reg_c <= 16'h0000;
             mdr   <= 16'h0000;
             {fz, fs, fc, fv} <= 4'b0000;
+            saved_flags <= 4'b0000;
             cr_bank0  <= 8'd0;          // 复位值 = 窗口号（直通）
             cr_bank1  <= 8'd1;
             cr_bank2  <= 8'd2;
@@ -278,6 +280,7 @@ module pbb16 (
 
             // 异常进入（规格 4.3）：EPC、Cause、EXL、MAPE 落影子位并清 0、PC 向量
             if (exc_we) begin
+                saved_flags <= {fz, fs, fc, fv};
                 cr_epc    <= exc_epc_sel ? (pc + 16'd2) : pc;
                 cr_excode <= exc_code;
                 cr_ip     <= irq;
@@ -285,8 +288,9 @@ module pbb16 (
                 cr_maps   <= cr_mape;
                 cr_mape   <= 1'b0;
             end
-            // ERET：EXL <- 0，MAPE 从影子位恢复
+            // ERET：EXL <- 0，MAPE 与标志从单层影子恢复
             if (exl_clr) begin
+                {fz, fs, fc, fv} <= saved_flags;
                 cr_exl  <= 1'b0;
                 cr_mape <= cr_maps;
             end

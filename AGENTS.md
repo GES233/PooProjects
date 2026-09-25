@@ -56,6 +56,7 @@
 - `python asm/pbb16asm.py asm/test_memmap.asm -o asm/test_memmap.hex && iverilog -g2012 -Wall -I rtl -o tb/memmap.vvp rtl/*.v tb/tb_memmap.v && vvp tb/memmap.vvp`
 - `python asm/pbb16asm.py asm/test_fpu.asm -o asm/test_fpu.hex && iverilog -g2012 -Wall -I rtl -o tb/fpu.vvp rtl/*.v tb/tb_fpu.v && vvp tb/fpu.vvp`
 - `python asm/pbb16asm.py asm/test_timer.asm -o asm/test_timer.hex && iverilog -g2012 -Wall -I rtl -o tb/timer.vvp rtl/*.v tb/tb_timer.v && vvp tb/timer.vvp`
+- `iverilog -g2012 -Wall -I rtl -s tb_exception_flags -o tb/exception_flags.vvp rtl/*.v tb/tb_exception_flags.v && vvp tb/exception_flags.vvp`（异常标志保存/恢复，含定点中断与单层覆盖）
 
 ## 修改时的注意事项
 

@@ -200,7 +200,7 @@ v2 改为把返回地址压栈，**支持任意层数嵌套调用和递归**。�
 | MFC | `111 00` + rgs + cr4 | `R[rgs] = CR[cr]`（原版未实现的 CR→GPR，v2 补全） |
 | MTC | `111 01` + rgs + cr4 | `CR[cr] = R[rgs]` |
 | TRAP | `111 10` + fct=`000` | 陷入（excode=2） |
-| ERET | `111 10` + fct=`001` | 异常返回：`PC = EPC; EXL = 0` |
+| ERET | `111 10` + fct=`001` | 异常返回：`PC = EPC; EXL = 0; MAPE = MAPS`，恢复保存的 Z/S/C/V |
 
 ---
 
@@ -232,7 +232,10 @@ Status 读写位布局**完全一致**（原版写侧 IM 错位到 bits12:9 的 
 - 响应：`EPC ← PC`、`excode ← 异常码`、`EXL ← 1`、`MAPS ← MAPE`、`MAPE ← 0`、`PC ← 0xFF00`
   （原版按 excode 索引向量表，v2 简化为**单一入口 0xFF00**，由软件读 Cause 分发；
   v3 起 MAPE 落影子位并切直通 —— 向量页与 MMIO 恒可达，异常进入即"陷入内核态"）
-- 返回：ERET 恢复 `PC ← EPC`、`EXL ← 0`、`MAPE ← MAPS`（随 EXL 一同回到映射态）
+- 标志保存：所有异常入口同时将当前 `Z/S/C/V` 保存到内部 4 位影子寄存器，
+  不改变当前标志；影子复位为 0，不分配 CR 编号，不可经 MFC/MTC 读写。
+- 返回：ERET 恢复 `PC ← EPC`、`EXL ← 0`、`MAPE ← MAPS`（随 EXL 一同回到映射态），
+  并恢复保存的 `Z/S/C/V`，避免 handler 的运算影响被打断的条件跳转和 ADC/SBB。
 - 溢出（V）不触发异常，仅置标志（原版 flg 触发中断的机制砍掉）
 
 **精确语义（第二阶段实现时裁决，仿真已验证）**：
@@ -243,10 +246,15 @@ Status 读写位布局**完全一致**（原版写侧 IM 错位到 bits12:9 的 
   中断 → `EPC = 下一条指令`（FETCH 边界采样，天然精确）。
 - **中断判定**：`IE=1 且 EXL=0 且 (irq & ~IM) != 0` 时触发，即 **IM 位 = 1 屏蔽、0 放行**；
   电平敏感、无挂起锁存。`Cause.IP` 锁存进入瞬间的**原始** irq 值（未与 IM 相与），便于调试。
-- **EXL 只挡中断不挡故障**：handler 内再发生异常会覆盖 EPC/Cause，软件自行避免。
-- 非法指令不可经 ERET 恢复（EPC 指自身且 EPC 软件只读）：handler 需自行修改返回路径
-  （如 MTC 清 EXL 后 JR 到恢复点）。
+- **EXL 只挡中断不挡故障或 TRAP**：handler 内再发生异常会覆盖 EPC/Cause/MAPS
+  和保存的标志；仅支持单层保存，不提供嵌套栈，软件自行避免。
+- 标志仅由 ERET 恢复；手动清 EXL 后 JR 不恢复标志。
+- 非法指令若保持不变，ERET 会再次触发异常（EPC 指自身且 EPC 软件只读）：
+  handler 可修补故障指令后 ERET 重试，或自行修改返回路径（如 MTC 清 EXL 后 JR 到恢复点）。
 - 异常入口占一个 EXC 气泡拍（多周期 FSM），寄存器锁存在进入该拍的时钟沿完成。
+
+标志保存/恢复回归见 `tb/tb_exception_flags.v`：覆盖 CMP 与 JCC 之间的定点中断、
+四类异常返回后的 Z/S/C/V 分支与 ADC，以及 handler 内 TRAP 覆盖单层返回上下文。
 
 ---
 

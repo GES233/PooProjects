@@ -26,6 +26,18 @@
 
 ## 构建与运行
 
+### PBB16 C 工具链（第一阶段）
+
+`pbb16-softcore/compiler/` 固定 M2-Planet 1.13.1 源码并增加最小 PBB16 后端；
+只接受无参数 `int main(void) { return N; }`（N=0～32767，含十/八/十六进制），
+其余输入明确拒绝。需要宿主 GCC、Python 3、iverilog/vvp。
+在 `pbb16-softcore/` 下运行 `python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return42.hex`，
+生成函数汇编、带启动代码的汇编和 memh 映像；完整说明见 `compiler/README.md`。
+修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage1.py`。
+这不是完整 C/xv6 移植或板端自举，后续需逐项实现并测试。
+
+### RTL 与历史电路
+
 `pbb16-softcore/` 用 iverilog 仿真，命令见上文目录结构与下文测试两节（在 `pbb16-softcore/` 目录内执行）。归档的老电路没有构建流程，工作方式：
 
 1. 运行 Logisim：`java -jar logisim-generic-2.7.1_TRP汉化版.jar`（需要 Java 运行时）。

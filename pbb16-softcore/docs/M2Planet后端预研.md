@@ -1,5 +1,12 @@
 # M2-Planet → PBB16 v2 后端预研备忘
 
+> **实施进展（2026-09-25）**：`../compiler/` 已固定 M2-Planet 1.13.1 并打通
+> 无参数 main 返回非负 16 位 int 常量的 C→汇编→RTL 仿真链。
+> 最小约定及可运行命令见 `../compiler/README.md`；下文保留为原始预研，
+> 其完整后端工量、自举可行性与全类型支持估计尚未验证。
+> 注意：下文示意中的 MOVI→MOVUI 顺序会丢失低字节；实际实现使用 MOVUI→ORI。
+> 启动栈顶改用 0xEFFE，避开 MMIO 和异常向量页。
+
 > 调研日期：2026-09-24，对象：M2-Planet master（v1.13.1）、M2libc master、mescc-tools master。
 > 结论先行：**可行，是自制 CPU 获得 C 编译器改动量最小的现实路线**；
 > 总量估计 1000–1800 行，最大风险是跳转距离工程和 `register_size=2` 未走过路径。

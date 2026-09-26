@@ -21,9 +21,10 @@ def command(argv):
     return result.stdout
 
 
-def simulate(image, expected, *, pushes=0, depth=0):
+def simulate(image, expected, *, pushes=0, depth=0, localbytes=0):
     output = command(["vvp", OUT / "c_return.vvp", f"+image={image}",
-                      f"+expected={expected & 0xffff:04x}", f"+pushes={pushes}", f"+depth={depth}"])
+                      f"+expected={expected & 0xffff:04x}", f"+pushes={pushes}", f"+depth={depth}",
+                      f"+localbytes={localbytes}"])
     if "== tb_c_return: PASS" not in output or any(s in output for s in ("FAIL", "ERROR", "WARNING")):
         raise RuntimeError(output)
     print(image.stem, next(line for line in output.splitlines() if "PASS" in line))
@@ -59,12 +60,18 @@ def run_tests():
         compile_file(source, source.with_suffix(".hex"), binary)
         simulate(source.with_suffix(".hex"), expected)
 
+    # A file without a trailing newline must compile (upstream preprocess fix).
+    source = OUT / "no_trailing_newline.c"
+    source.write_text("int main(void) { return 42; }", encoding="utf-8")
+    compile_file(source, source.with_suffix(".hex"), binary)
+    simulate(source.with_suffix(".hex"), 42)
+
     rejected = [
         "int main(void) { return 32768; }",
         "int main(void) { return 65536; }", "int main(void) { return 9999999999999999999999999999; }",
         "int main(void) { return 08; }", "int main(void) { return 0x; }",
         "int main(void) { return 42u; }",
-        "int main(void) { int a; return 42; }", "int main(void) { if(1) return 42; return 0; }",
+        "int main(void) { if(1) return 42; return 0; }",
         "int main(void) { return; }", "int main(void) { return 42 }",
         "int main(int x) { return 42; }", "int other(void) { return 42; }",
         "int main(void) { return 42; } int other(void) { return 0; }",

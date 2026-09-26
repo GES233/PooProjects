@@ -391,7 +391,7 @@ int main(int argc, char** argv)
 	program();
 	if(Architecture == PBB16)
 	{
-		fputs("; M2-Planet 1.13.1 / PBB16 stage 3\n", destination_file);
+		fputs("; M2-Planet 1.13.1 / PBB16 stage 4\n", destination_file);
 		recursive_output(output_list, destination_file);
 		goto exit_success;
 	}

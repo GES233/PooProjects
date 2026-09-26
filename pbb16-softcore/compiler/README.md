@@ -1,21 +1,26 @@
-# PBB16 C 工具链：常量返回与算术表达式
+# PBB16 C 工具链：常量返回、算术表达式与局部变量
 
 目标：把 `int main(void) { return 42; }` 交给**真实的 M2-Planet C 前端**，
 由新增的 PBB16 后端生成汇编，接上启动代码、现有汇编器，在 CPU 仿真中返回 42。
 
 这是宿主机上的交叉编译链，尚不是完整 C 编译器移植，也不是板端自举。
-第二步已加入二元 `+`、`-` 和括号；第三步加入二元 `*`、`/`、`%` 和一元负号。
-当前支持一个无参数 `int main(void)`（也接受 `main()`），函数体只有 `return 表达式;`。
+第二步已加入二元 `+`、`-` 和括号；第三步加入二元 `*`、`/`、`%` 和一元负号；
+第四步加入局部 `int` 变量的声明、读取与赋值。
+当前支持一个无参数 `int main(void)`（也接受 `main()`），函数体为若干语句加最后的
+`return 表达式;`。语句可以是声明（`int x;`、`int x = 表达式;`，每条一句）、
+赋值（`x = 表达式;`，右结合、可链式、本身也是表达式）或任意表达式语句。
 表达式中的整数常量为 0～32767，接受十进制、八进制和十六进制，以及空白和 C 注释。
 `*` `/` `%` 同级且高于 `+` `-`，同级从左向右结合；括号可以嵌套；运算结果可为负数。
 除法和取模是 C99 有符号语义（向零取整、余数符号与被除数一致），直接落在硬件的
 有符号 DIV/REM 上；常量除零和 `-32768 / -1` 在编译期拒绝，不依赖硬件的除零规则。
 
-不支持一元正号（`+1`）、常量后缀、变量、参数、其他函数、预处理指令或头文件。
-这些输入返回非零状态并报错，不会默默跳过。
+不支持一元正号（`+1`）、常量后缀、其他类型、数组、参数、其他函数、嵌套块、
+控制流、预处理指令或头文件。这些输入返回非零状态并报错，不会默默跳过。
 所有中间结果都必须落在有符号 16 位范围 −32768～32767；例如 `(32767 + 1) - 1`
 虽然最终数值在范围内，也会在溢出的那一步报错，不把硬件回绕当作有符号 C 语义。
-当前限定括号最多嵌套 64 层、运算（含一元负号）最多 256 次，
+闸门会跟踪每个局部变量的编译期已知值，所以 `int x = 5; return x * 10000;`
+仍在编译期拒绝；变量参与而值未知的表达式则放行（有符号溢出在 C 里本是未定义行为）。
+当前限定括号最多嵌套 64 层、运算（含一元负号与赋值）最多 256 次、局部变量最多 32 个，
 以限制宿主解析递归和目标程序资源使用。
 
 ## 运行
@@ -28,7 +33,8 @@ python compiler/build.py
 python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return42.hex
 python compiler/pbb16cc.py compiler/examples/arithmetic.c -o compiler/build/arithmetic.hex
 python compiler/pbb16cc.py compiler/examples/muldiv.c -o compiler/build/muldiv.hex
-python compiler/test_stage3.py
+python compiler/pbb16cc.py compiler/examples/locals.c -o compiler/build/locals.hex
+python compiler/test_stage4.py
 ```
 
 `build.py --cc 路径` 可指定宿主 C 编译器；`pbb16cc.py` 检测到源码更新或编译器缺失时
@@ -170,6 +176,64 @@ FUNCTION_main:
 - `pbb16_target.c / validate_term、validate_unary`：闸门里的优先级分层，
   以及不做 32 位中间量的乘法溢出检查 `mul_exceeds_int16`。
 
+## 顺着局部变量阅读
+
+`examples/locals.c` 返回 42。这一步函数第一次有了**栈帧**：
+
+```asm
+FUNCTION_main:
+    MOV R7, R6       ; R7 = LOCALS，帧基址
+    ADDI R6, -4      ; 为两个 int 局部变量腾出 4 字节
+    ; ...
+    MOV R6, R7       ; 返回前把 SP 还回帧基址
+    RET
+```
+
+局部变量没有固定地址，编译器只记"相对 R7 的偏移"：第一个 `int` 在 R7−2，
+第二个在 R7−4。读写一个变量因此是两条指令——先 `MOV Rd, R7; ADDI Rd, -偏移`
+算出地址，再用 `LOD.W`/`STR.W` 偏移 0 访问。LOD/STR 自带的 ±16 字节偏移
+看似可以直接 fused 成一条，但上游把"算地址"和"访存"分成两个独立原语
+（`emit_load_relative_to_register` 与 `load_value`/`store_value`），
+保持这个边界可以让赋值（只算地址、不读）和读取（算地址再读）共用同一段代码，
+代价是每次访问多一条 MOV/ADDI。
+
+函数入口的 `MOV R7, R6` + `ADDI R6, -N` 是**回填**出来的：上游
+`declare_function` 先在输出流里放两个空字符串占位，等函数体解析完、
+`locals_depth` 确定了，再把指令文本写回占位符。返回前的 `MOV R6, R7`
+同理，从 `return_result` 和函数结尾两处引用同一份文本。
+
+`x = x * y;` 的生成代码展示了赋值的完整协议：
+
+```asm
+    MOV R0, R7 / ADDI R0, -2   ; R0 = x 的地址（赋值目标的左侧只求地址）
+    PUSH R0                    ; 暂存地址
+    ... 右侧表达式，结果在 R0 ...
+    POP R1                     ; R1 = 地址
+    STR.W R0, 0(R1)            ; MEM[地址] = 结果；R0 保留赋值表达式的值
+```
+
+赋值是表达式、值留在 R0，所以 `a = b = 1` 右结合链式成立，`return (x = 5) + x;`
+也是合法的。闸门的常量跟踪按语句顺序更新每个变量的已知值，因此
+`int x = 5; return x * 10000;` 仍能在编译期报溢出。
+
+配套改动还有两处值得一提：
+
+- `tb/tb_c_return.v` 原来强制 0xE000 以上只允许栈引擎（PUSH/POP/CALL/RET）
+  访问；现在按 `+localbytes=N` 开出帧窗口 `[0xEFFC−N, 0xEFFA]`，
+  允许其中的字对齐 LOD/STR，并相应调整 LIFO 基址与 RET/R7 检查。
+- 修了一个上游 bug：预处理器的 `maybe_expand` 要求每个 token 都有后继，
+  没有换行结尾的源文件会在最后一个 `}` 上崩溃；现在只对真正需要展开的
+  宏要求后继。这不是 PBB16 特有，任何架构都能复现。
+
+建议继续看：
+
+- `cc_core.c / collect_local`：局部变量的声明、偏移分配（`depth`）与初始化发射。
+- `cc_core.c / load_address_of_variable_into_register`：名字到"基址+偏移"的查找。
+- `cc_emit.c / emit_load_relative_to_register、write_move、write_sub_immediate`：
+  prologue/epilogue 与地址计算的 PBB16 分支。
+- `pbb16_target.c / validate_declaration、validate_expression`：
+  闸门的符号表与环境式常量跟踪。
+
 ## 本阶段的 ABI 与启动约定
 
 | 项目 | 约定 |
@@ -181,11 +245,12 @@ FUNCTION_main:
 | 栈预留区 | 0xE000～0xEFFF；仅为本阶段布局，不是硬件保护 |
 | 调用 | CALL 隐含先将 SP 减 2，再保存 PC+2；RET 弹出它 |
 | 返回值 | 16 位有符号 int 的结果放 R0，范围 −32768～32767；负数为补码，例如 −2 对应 FFFE |
-| 寄存器 | R0 放当前结果，R1 为临时左操作数；R6 由 CALL/RET/PUSH/POP 改变且返回后平衡；R2～R5/R7 不动 |
+| 寄存器 | R0 放当前结果，R1 为临时左操作数/地址；R6=SP（CALL/RET/PUSH/POP 改变且返回后平衡）；R7=LOCALS 帧基址；R2～R5 不动 |
+| 栈帧 | 仅当函数有局部变量时建立：`MOV R7, R6; ADDI R6, -N`；局部第 k 个 int 在 R7−2(k+1)；返回前 `MOV R6, R7` |
 | 标志 | 函数调用约定不保证 Z/S/C/V 保留；不要与中断恢复规则混淆 |
 | 程序结束 | main 返回 `_exit`（地址 0x0006），HLT 保留 R0 供 testbench 检查 |
 
-暂不承诺参数传递、局部变量、通用 caller/callee-saved 分组、long/long long、
+暂不承诺参数传递、多函数调用、通用 caller/callee-saved 分组、long/long long、
 结构体、普通 C 指针或动态存储分配的完整 ABI。`register_size=2` 是此次后端设置，
 不等于上游所有类型都已经适配；能力检查会阻止访问这些未验证路径。
 无全局数据，故启动代码尚无 `.data` 搬运、`.bss` 清零或 libc 初始化。
@@ -196,17 +261,20 @@ MEM16[EFFC]=0006；RET 后 PC=0006、SP=EFFE，结果仍在 R0。
 
 ## 验证与下一步
 
-`test_stage3.py` 会先运行完整 `test_stage2.py` 回归（它再套 `test_stage1.py`，
-也可单独运行），重建宿主编译器并验证 47 组含乘除模和一元负号的表达式仿真：
-优先级与结合性、向零取整与余数符号、边界值（`-32768` 可达、`32767*2` 拒绝）、
-除零与 `-32768 / -1` 的编译期拒绝、256 次运算上限和固定种子的 16 组随机表达式。
-测试用独立的 Python AST 按 C 语义（非 Python 的向下取整）计算期望结果、
-PUSH 次数与最大临时栈深度。
+`test_stage4.py` 会先运行完整 `test_stage3.py` 回归（逐层套到 `test_stage1.py`，
+也可单独运行），重建宿主编译器并验证 13 组带局部变量的程序仿真：
+声明/赋值/读取、链式赋值与赋值表达式、负数经由变量、8 个局部变量的帧，
+外加 `examples/locals.c` 的端到端检查。测试用独立的 Python 递归下降求值器
+按 C 语义计算期望结果、PUSH 次数、最大临时栈深度和帧字节数（`+localbytes`）。
+拒绝用例覆盖未声明/重复声明/初始化里引用自身、每句多声明符、数组、其他类型、
+保留字命名、嵌套块、已知值常量传播后的溢出与除零、非变量左值、复合赋值、
+控制流、缺分号、return 后的废话和 33 个局部变量。
+阶段一到三的行为保持不变（`+localbytes` 缺省为 0 时 testbench 检查与原样等价）。
 
 仿真设周期上限，错误以 `$fatal` 退出，不仅打印 FAIL。
 上游完整前端仍在，但 `pbb16_validate_program` 在预处理前拒绝超出本阶段的输入。
 它是功能边界检查，验证后的 token 仍交给原来的 M2 解析器；并未用正则匹配替代 C 编译。
 
-下一步可加入一个局部 `int` 变量的初始化、读取和赋值：在已有表达式基础上学习
-栈帧和变量地址，再逐步扩展函数调用。xv6 源码兼容、目标机运行编译器及自举仍未实现。
-来源、许可证及本地差异见 `vendor/README.md`。
+下一步是控制流（`if`/`else` 与比较运算）：需要把比较物化为 0/1（CMP + 条件跳链），
+并处理 JCC ±128 字节、J ±1KB 的跳转范围限制。xv6 源码兼容、目标机运行编译器
+及自举仍未实现。来源、许可证及本地差异见 `vendor/README.md`。

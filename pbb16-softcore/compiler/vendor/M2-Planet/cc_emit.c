@@ -158,6 +158,21 @@ char* register_from_string(int reg)
 		else if(reg == REGISTER_RETURN) return "ra";
 		else if(reg == REGISTER_STACK) return "sp";
 	}
+	else if(PBB16 == Architecture)
+	{
+		/* R0/R1: expression results; R2-R4: temps; R5: arguments base;
+		 * R6: stack pointer (hardware PUSH/POP/CALL/RET); R7: locals base.
+		 * REGISTER_RETURN has no PBB16 meaning (return address is on the
+		 * stack) and must fall through to the error below. */
+		if(reg == REGISTER_ZERO) return "R0";
+		else if(reg == REGISTER_ONE) return "R1";
+		else if(reg == REGISTER_TEMP) return "R2";
+		else if(reg == REGISTER_TEMP2) return "R3";
+		else if(reg == REGISTER_EMIT_TEMP) return "R4";
+		else if(reg == REGISTER_BASE) return "R5";
+		else if(reg == REGISTER_STACK) return "R6";
+		else if(reg == REGISTER_LOCALS) return "R7";
+	}
 
 	fputs("PROGRAMMING ERROR: Invalid register passed to register_from_string: '", stderr);
 	fputs(int2str(reg, 10, FALSE), stderr);
@@ -703,6 +718,20 @@ void write_add(int destination_reg, int source_reg, char* note)
 		emit_to_string("_");
 		emit_to_string(destination_name);
 	}
+	else if(PBB16 == Architecture)
+	{
+		emit_to_string("ADD ");
+		emit_to_string(destination_name);
+		emit_to_string(", ");
+		emit_to_string(source_name);
+		if(note != NULL)
+		{
+			emit_to_string(" ; ");
+			emit_to_string(note);
+		}
+		emit_to_string("\n");
+		return;
+	}
 	else if(Architecture & ARCH_FAMILY_RISCV)
 	{
 		emit_to_string("rd_");
@@ -735,6 +764,29 @@ void emit_add(int destination_reg, int source_reg, char* note)
 
 void write_add_immediate(int reg, int value, char* note)
 {
+	if(Architecture == PBB16)
+	{
+		/* ADDI sign-extends Imm8; larger constants go through EMIT_TEMP. */
+		if(value >= -128 && value <= 127)
+		{
+			emit_to_string("ADDI ");
+			emit_to_string(register_from_string(reg));
+			emit_to_string(", ");
+			emit_to_string(int2str(value, 10, TRUE));
+			if(note != NULL)
+			{
+				emit_to_string(" ; ");
+				emit_to_string(note);
+			}
+			emit_to_string("\n");
+		}
+		else
+		{
+			write_load_immediate(REGISTER_EMIT_TEMP, value, note);
+			write_add(reg, REGISTER_EMIT_TEMP, note);
+		}
+		return;
+	}
 	if((Architecture & ARCH_FAMILY_X86) && (reg == REGISTER_ZERO))
 	{
 		emit_to_string("add_");
@@ -826,6 +878,20 @@ void write_sub(int destination_reg, int source_reg, char* note)
 		emit_to_string("_");
 		emit_to_string(source_name);
 	}
+	else if(PBB16 == Architecture)
+	{
+		emit_to_string("SUB ");
+		emit_to_string(destination_name);
+		emit_to_string(", ");
+		emit_to_string(source_name);
+		if(note != NULL)
+		{
+			emit_to_string(" ; ");
+			emit_to_string(note);
+		}
+		emit_to_string("\n");
+		return;
+	}
 	else if(Architecture & ARCH_FAMILY_RISCV)
 	{
 		emit_to_string("rd_");
@@ -858,6 +924,29 @@ void emit_sub(int destination_reg, int source_reg, char* note)
 
 void write_sub_immediate(int reg, int value, char* note)
 {
+	if(Architecture == PBB16)
+	{
+		/* ADDI sign-extends Imm8, so -value must fit in [-128, 127]. */
+		if(value >= -127 && value <= 128)
+		{
+			emit_to_string("ADDI ");
+			emit_to_string(register_from_string(reg));
+			emit_to_string(", ");
+			emit_to_string(int2str(-value, 10, TRUE));
+			if(note != NULL)
+			{
+				emit_to_string(" ; ");
+				emit_to_string(note);
+			}
+			emit_to_string("\n");
+		}
+		else
+		{
+			write_load_immediate(REGISTER_EMIT_TEMP, value, note);
+			write_sub(reg, REGISTER_EMIT_TEMP, note);
+		}
+		return;
+	}
 	if((Architecture & ARCH_FAMILY_X86) && (reg == REGISTER_STACK || reg == REGISTER_ZERO))
 	{
 		emit_to_string("sub_");
@@ -997,6 +1086,22 @@ void write_move(int destination_reg, int source_reg, char* note)
 		emit_to_string("_FROM_");
 		emit_to_string(source_name);
 	}
+	else if(PBB16 == Architecture)
+	{
+		/* PBB16 comments start with ; — handle the note here and skip
+		 * the shared "# note" suffix below. */
+		emit_to_string("MOV ");
+		emit_to_string(destination_name);
+		emit_to_string(", ");
+		emit_to_string(source_name);
+		if(note != NULL)
+		{
+			emit_to_string(" ; ");
+			emit_to_string(note);
+		}
+		emit_to_string("\n");
+		return;
+	}
 	else if(Architecture & ARCH_FAMILY_RISCV)
 	{
 		emit_to_string("rd_");
@@ -1105,6 +1210,28 @@ void emit_load_relative_to_register(int destination, int offset_register, int va
 			emit_out(value_string);
 			emit_out(" addi");
 		}
+	}
+	else if(PBB16 == Architecture)
+	{
+		/* PBB16 assembly uses ; for comments, so notes are handled here
+		 * and the shared "# note" suffix at the end must be skipped. */
+		require(value >= -128 && value <= 127,
+			"PBB16: frame offset does not fit ADDI sext Imm8\n");
+		emit_out("MOV ");
+		emit_out(destination_name);
+		emit_out(", ");
+		emit_out(offset_name);
+		emit_out("\nADDI ");
+		emit_out(destination_name);
+		emit_out(", ");
+		emit_out(value_string);
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
+		return;
 	}
 
 

@@ -962,6 +962,14 @@ struct token_list* maybe_expand(struct token_list* token)
 	}
 
 	struct macro_list* hold = lookup_macro(token);
+
+	/* A non-macro token needs no next token; in particular the final token
+	 * of a file without a trailing newline must be allowed through. */
+	if (NULL == hold)
+	{
+		return token->next;
+	}
+
 	if(NULL == token->next)
 	{
 		line_error_token(macro_token);
@@ -969,11 +977,6 @@ struct token_list* maybe_expand(struct token_list* token)
 		fputs(token->s, stderr);
 		fputc('\n', stderr);
 		exit(EXIT_FAILURE);
-	}
-
-	if (NULL == hold)
-	{
-		return token->next;
 	}
 
 	token = eat_token(token);

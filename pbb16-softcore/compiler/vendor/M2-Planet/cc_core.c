@@ -400,6 +400,7 @@ char* load_value_signed(unsigned size)
 		else if(ARMV7L == Architecture) return "LOADS16 R0 LOAD R0 HALF_MEMORY\n";
 		else if(AARCH64 == Architecture) return "LDRSH_X0_[X0]\n";
 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lh\n";
+		else if(PBB16 == Architecture) return "LOD.W R0, 0(R0)\n";
 	}
 	else if(size == 4)
 	{
@@ -442,6 +443,7 @@ char* load_value_unsigned(unsigned size)
 		else if(ARMV7L == Architecture) return "NO_OFFSET R0 LOAD R0 HALF_MEMORY\n";
 		else if(AARCH64 == Architecture) return "LDRH_W0_[X0]\n";
 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lhu\n";
+		else if(PBB16 == Architecture) return "LOD.W R0, 0(R0)\n";
 	}
 	else if(size == 4)
 	{
@@ -491,6 +493,7 @@ char* store_value(unsigned size)
 		else if(ARMV7L == Architecture) return "NO_OFFSET R0 STORE16 R1 HALF_MEMORY\n";
 		else if(AARCH64 == Architecture) return "STRH_W0_[X1]\n";
 		else if(RISCV32 == Architecture || RISCV64 == Architecture) return "rs1_a1 rs2_a0 sh\n";
+		else if(PBB16 == Architecture) return "STR.W R0, 0(R1)\n";
 	}
 	else if(size == 4)
 	{
@@ -2064,7 +2067,8 @@ void collect_local(void)
 		require(!in_set(name[0], "[{(<=>)}]|&!^%;:'\""), "forbidden character in local variable name\n");
 		require(!iskeywordp(name), "You are not allowed to use a keyword as a local variable name\n");
 
-		emit_out("# Defining local ");
+		if(Architecture == PBB16) emit_out("; Defining local ");
+		else emit_out("# Defining local ");
 		emit_out(name);
 		emit_out("\n");
 

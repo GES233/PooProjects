@@ -1,6 +1,9 @@
 // C ABI: crt0 -> CALL main -> R0 result -> HLT at 0x0006.
-// vvp ... +image=path.hex +expected=002a +pushes=2 +depth=2
-// Counts/depth are independent expectations supplied by the test, not assembly.
+// vvp ... +image=path.hex +expected=002a +pushes=2 +depth=2 [+localbytes=4]
+// Counts/depth/localbytes are independent expectations supplied by the test,
+// not derived from the assembly. localbytes is the frame size main's prologue
+// reserves with ADDI SP, -N; locals live in [0xEFFC-N, 0xEFFA] and are the
+// only non-stack-engine accesses allowed at or above 0xE000.
 `timescale 1ns/1ps
 module tb_c_return;
     reg clk = 0;
@@ -24,6 +27,7 @@ module tb_c_return;
     integer max_depth = 0;
     integer expected_pushes = 0;
     integer expected_depth = 0;
+    integer expected_local_bytes = 0;
     reg [15:0] stack_top = 16'hEFFE;
     always @(posedge clk) begin
         if (rst_n && (we || re)) begin
@@ -38,31 +42,60 @@ module tb_c_return;
                 $fatal(1, "unexpected code/data access at %h", addr);
         end
         if (rst_n && we) begin
-            if (addr !== {6'd0, stack_top - 16'd2})
-                $fatal(1, "non-LIFO stack write at %h (top=%h)", addr, stack_top);
-            if (writes == 0) begin
-                if (dut.is_call !== 1 || addr !== 22'h00EFFC || wdata !== 16'h0006)
-                    $fatal(1, "incorrect CALL return address");
-            end else if (dut.is_push !== 1 || stack_words < 1 || addr >= 22'h00EFFC)
-                $fatal(1, "expected expression PUSH below CALL return address");
-            stack_top = stack_top - 16'd2;
-            stack_words = stack_words + 1;
-            if (stack_words - 1 > max_depth) max_depth = stack_words - 1;
-            mem[addr[15:0]] <= wdata[7:0];
-            mem[addr[15:0] + 16'd1] <= wdata[15:8];
-            writes = writes + 1;
+            if (dut.is_push === 1'b1 || dut.is_call === 1'b1) begin
+                if (writes == 0) begin
+                    if (dut.is_call !== 1'b1 || addr !== 22'h00EFFC || wdata !== 16'h0006)
+                        $fatal(1, "incorrect CALL return address");
+                    /* Expression pushes start below the locals area that the
+                     * prologue carves out (invisible here: ADDI is not a
+                     * memory access), so adjust the LIFO base once. */
+                    stack_top = 16'hEFFC - expected_local_bytes[15:0];
+                end else begin
+                    if (dut.is_push !== 1'b1 || addr !== {6'd0, stack_top - 16'd2})
+                        $fatal(1, "non-LIFO stack write at %h (top=%h)", addr, stack_top);
+                    if (stack_words < 1 || addr >= 22'h00EFFC - expected_local_bytes)
+                        $fatal(1, "expected expression PUSH below CALL return address and locals");
+                    stack_top = stack_top - 16'd2;
+                end
+                stack_words = stack_words + 1;
+                if (stack_words - 1 > max_depth) max_depth = stack_words - 1;
+                mem[addr[15:0]] <= wdata[7:0];
+                mem[addr[15:0] + 16'd1] <= wdata[15:8];
+                writes = writes + 1;
+            end else begin
+                /* Local-variable STR.W: word-aligned, inside the frame
+                 * window, and not part of the LIFO accounting. */
+                if (expected_local_bytes < 2 || size !== 1'b1 || addr[0] !== 1'b0 ||
+                    addr < 22'h00EFFC - expected_local_bytes || addr > 22'h00EFFA)
+                    $fatal(1, "store outside the locals window at %h", addr);
+                mem[addr[15:0]] <= wdata[7:0];
+                mem[addr[15:0] + 16'd1] <= wdata[15:8];
+            end
         end
         if (rst_n && re && addr >= 22'h00E000) begin
-            if (stack_words < 1 || addr !== {6'd0, stack_top})
-                $fatal(1, "non-LIFO stack read at %h (top=%h)", addr, stack_top);
-            if (stack_words == 1) begin
-                if (dut.is_ret !== 1 || rdata !== 16'h0006)
-                    $fatal(1, "RET must read the original CALL return address");
-            end else if (dut.is_pop !== 1)
-                $fatal(1, "expected expression POP");
-            stack_top = stack_top + 16'd2;
-            stack_words = stack_words - 1;
-            reads = reads + 1;
+            if (dut.is_pop === 1'b1 || dut.is_ret === 1'b1) begin
+                if (stack_words < 1)
+                    $fatal(1, "stack underflow on read at %h", addr);
+                if (stack_words == 1) begin
+                    /* The epilogue's MOV SP, LOCALS is invisible to this
+                     * monitor, so the RET slot is checked absolutely and the
+                     * LIFO base is realigned to just above the CALL slot. */
+                    if (dut.is_ret !== 1'b1 || addr !== 22'h00EFFC || rdata !== 16'h0006)
+                        $fatal(1, "RET must read the original CALL return address");
+                    stack_top = 16'hEFFC;
+                end else begin
+                    if (dut.is_pop !== 1'b1 || addr !== {6'd0, stack_top})
+                        $fatal(1, "non-LIFO stack read at %h (top=%h)", addr, stack_top);
+                end
+                stack_top = stack_top + 16'd2;
+                stack_words = stack_words - 1;
+                reads = reads + 1;
+            end else begin
+                /* Local-variable LOD.W, same window as stores. */
+                if (expected_local_bytes < 2 || size !== 1'b1 || addr[0] !== 1'b0 ||
+                    addr < 22'h00EFFC - expected_local_bytes || addr > 22'h00EFFA)
+                    $fatal(1, "load outside the locals window at %h", addr);
+            end
         end
     end
 
@@ -75,6 +108,7 @@ module tb_c_return;
             $fatal(1, "requires +image=path.hex +expected=hhhh");
         if ($value$plusargs("pushes=%d", expected_pushes)) begin end
         if ($value$plusargs("depth=%d", expected_depth)) begin end
+        if ($value$plusargs("localbytes=%d", expected_local_bytes)) begin end
         fd = $fopen(image_path, "r");
         if (fd == 0) $fatal(1, "cannot open program image");
         $fclose(fd);
@@ -101,8 +135,10 @@ module tb_c_return;
         if (dut.cr_exl !== 0 || dut.cr_ie !== 0)
             $fatal(1, "unexpected exception/interrupt state");
         for (i = 1; i < 8; i = i + 1)
-            if (i != 6 && (i != 1 || expected_pushes == 0) && dut.rf.regs[i] !== 0)
+            if (i != 6 && i != 7 && (i != 1 || expected_pushes == 0) && dut.rf.regs[i] !== 0)
                 $fatal(1, "unexpectedly clobbered R%0d", i);
+        if (dut.rf.regs[7] !== ((expected_local_bytes > 0) ? 16'hEFFC : 16'h0000))
+            $fatal(1, "unexpected R7 (locals pointer) %h", dut.rf.regs[7]);
         $display("== tb_c_return: PASS (R0=%h SP=%h PC=%h pushes=%0d depth=%0d cycles=%0d) ==",
                  dut.rf.regs[0], dut.rf.regs[6], dut.pc, writes - 1, max_depth, cycles);
         $finish;

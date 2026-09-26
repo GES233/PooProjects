@@ -60,10 +60,10 @@ def run_tests():
         simulate(source.with_suffix(".hex"), expected)
 
     rejected = [
-        "int main(void) { return -1; }", "int main(void) { return 32768; }",
+        "int main(void) { return 32768; }",
         "int main(void) { return 65536; }", "int main(void) { return 9999999999999999999999999999; }",
         "int main(void) { return 08; }", "int main(void) { return 0x; }",
-        "int main(void) { return 42u; }", "int main(void) { return 1 * 2; }",
+        "int main(void) { return 42u; }",
         "int main(void) { int a; return 42; }", "int main(void) { if(1) return 42; return 0; }",
         "int main(void) { return; }", "int main(void) { return 42 }",
         "int main(int x) { return 42; }", "int other(void) { return 42; }",

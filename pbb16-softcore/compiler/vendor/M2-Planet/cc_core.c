@@ -1250,7 +1250,14 @@ void postfix_expr(void)
  */
 void additive_expr_stub_a(void)
 {
-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+	if(PBB16 == Architecture)
+	{
+		/* common_recursion leaves the left operand in R1, the right in R0. */
+		general_recursion(postfix_expr, "MUL R0, R1\n", "*", additive_expr_stub_a);
+		general_recursion(postfix_expr, "DIV R1, R0\nMOV R0, R1\n", "/", additive_expr_stub_a);
+		general_recursion(postfix_expr, "REM R1, R0\nMOV R0, R1\n", "%", additive_expr_stub_a);
+	}
+	else if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
 	{
 		arithmetic_recursion(postfix_expr, "MUL R0 R1 R0\n", "MULU R0 R1 R0\n", "*", additive_expr_stub_a);
 		arithmetic_recursion(postfix_expr, "DIV R0 R1 R0\n", "DIVU R0 R1 R0\n", "/", additive_expr_stub_a);
@@ -1555,6 +1562,7 @@ void primary_expr(void)
 		common_recursion(primary_expr);
 
 		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("NEG R0 R0\n");
+		else if(PBB16 == Architecture) emit_out("SUB R1, R0\nMOV R0, R1\n");
 		else if(X86 == Architecture) emit_out("sub_ebx,eax\nmov_eax,ebx\n");
 		else if(AMD64 == Architecture) emit_out("sub_rbx,rax\nmov_rax,rbx\n");
 		else if(ARMV7L == Architecture) emit_out("'0' R0 R0 SUB R1 ARITH2_ALWAYS\n");

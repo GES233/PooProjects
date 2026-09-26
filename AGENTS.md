@@ -30,11 +30,12 @@
 
 `pbb16-softcore/compiler/` 固定 M2-Planet 1.13.1 源码并增加最小 PBB16 后端；
 接受无参数 `int main(void) { return 表达式; }`，支持 0～32767 的十/八/十六进制常量、
-二元 `+` / `-` 和括号；中间结果限有符号 16 位，括号最多 64 层、二元运算最多 256 次。
-一元正负号、变量等其余输入明确拒绝。需要宿主 GCC、Python 3、iverilog/vvp。
+一元负号、二元 `+` / `-` / `*` / `/` / `%`（C99 有符号语义）和括号；中间结果限有符号 16 位，
+括号最多 64 层、运算最多 256 次，常量除零在编译期拒绝。一元正号、变量等其余输入明确拒绝。
+需要宿主 GCC、Python 3、iverilog/vvp。
 在 `pbb16-softcore/` 下运行 `python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return42.hex`，
 生成函数汇编、带启动代码的汇编和 memh 映像；完整说明见 `compiler/README.md`。
-修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage2.py`（包含 stage1 回归）。
+修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage3.py`（包含 stage1/2 回归）。
 这不是完整 C/xv6 移植或板端自举，后续需逐项实现并测试。
 
 ### RTL 与历史电路

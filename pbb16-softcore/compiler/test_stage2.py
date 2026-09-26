@@ -77,8 +77,8 @@ def run_tests():
     simulate(output, 12, pushes=2, depth=2)
 
     invalid = [
-        "()", "(1", "1)", "1+(2-3", "1+", "1-", "+1", "-(1)", "1+-2", "1--2",
-        "1++2", "1 + + 2", "1 - - 2", "1 2", "(1)(2)", "1*2", "1/2", "1%2",
+        "()", "(1", "1)", "1+(2-3", "1+", "1-", "+1", "1--2",
+        "1++2", "1 + + 2", "1 2", "(1)(2)",
         "1<<2", "1&2", "1<2", "1?2:3", "1,2", "(int)1", "main()", "a+1",
         "1+32768", "1+08", "1+0x", "1+1u", "'a'+1", "1+=2",
         "32767+1", "0-32767-2", "0-(0-32767-1)", "(32767+1)-1",
@@ -96,7 +96,7 @@ def run_tests():
     # A late RHS error must not publish partial code over successful artifacts.
     paths = (output, output.with_suffix(".asm"), output.with_suffix(".function.asm"))
     before = [path.read_bytes() for path in paths]
-    source.write_text("int main(void) { return 20 + (3 * 5); }\n", encoding="utf-8")
+    source.write_text("int main(void) { return 20 + (6 / 0); }\n", encoding="utf-8")
     result = subprocess.run([sys.executable, str(HERE / "pbb16cc.py"), str(source), "-o", str(output)],
                             capture_output=True, text=True, timeout=10)
     if result.returncode != 1 or before != [path.read_bytes() for path in paths]:

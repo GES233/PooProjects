@@ -7,6 +7,7 @@
 //   C：加/减 = 进位/无借位（a>=b 无符号）；移位 = 最后移出位；其余 = 0
 //   V：加/减 = 有符号溢出；CMPU = 0；其余 = 0
 //   DIV 除零 -> 0xFFFF；REM 除零 -> 被除数（RISC-V 规则，规格 7.4）
+//   DIV/REM 为有符号运算（补码，向零取整，余数符号同被除数，同 C99/RISC-V）
 `include "pbb16_defs.vh"
 
 module alu (
@@ -25,6 +26,12 @@ module alu (
     wire [31:0] mul32 = a * b;
     wire [16:0] add17 = {1'b0, a} + {1'b0, b} + ((op == `ALU_ADC) ? cin : 1'b0);
     wire [16:0] sub17 = {1'b0, a} - {1'b0, b} - ((op == `ALU_SBB) ? cin : 1'b0);
+    // 有符号除法必须经 signed 线网单独求值：塞进含无符号量的三元表达式会被
+    // 上下文强制成无符号运算（仿真实测，iverilog）。
+    wire signed [15:0] sa = a;
+    wire signed [15:0] sb = b;
+    wire signed [15:0] div_s = sa / sb;
+    wire signed [15:0] rem_s = sa % sb;
 
     always @(*) begin
         y = 16'h0000;
@@ -44,8 +51,8 @@ module alu (
             end
             `ALU_MUL: y = mul32[15:0];
             `ALU_MLH: y = mul32[31:16];
-            `ALU_DIV: y = (b == 16'h0000) ? 16'hFFFF : a / b;
-            `ALU_REM: y = (b == 16'h0000) ? a        : a % b;
+            `ALU_DIV: y = (b == 16'h0000) ? 16'hFFFF : div_s;
+            `ALU_REM: y = (b == 16'h0000) ? a        : rem_s;
             `ALU_AND:  y = a & b;
             `ALU_OR:   y = a | b;
             `ALU_XOR:  y = a ^ b;

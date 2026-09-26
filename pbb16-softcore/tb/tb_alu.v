@@ -1,6 +1,6 @@
 // tb_alu.v — PBB16 v2 ALU 单元测试
 // 每个运算至少一组用例：ADD/SUB/ADC/SBB（进位borrow链）、MUL/MLH（高lo16）、
-// DIV/REM（含div0规则）、逻辑运算、CMP/CMPU（只置标志）、移位/循环移位。
+// DIV/REM（含div0规则与有符号语义）、逻辑运算、CMP/CMPU（只置标志）、移位/循环移位。
 `timescale 1ns/1ps
 `include "pbb16_defs.vh"
 
@@ -80,6 +80,18 @@ module tb_alu;
         op=`ALU_REM;
         a=16'd100; b=16'd7;  check("REM 100%7",    16'd2,     0,0,0,0);
         a=16'd100; b=16'd0;  check("REM div0",     16'd100,   0,0,0,0);
+
+        // ---- DIV / REM 有符号语义（v3 明确：向零取整，余数符号同被除数） ----
+        op=`ALU_DIV;
+        a=-16'sd20; b=16'sd3;    check("DIV -20/3",      -16'sd6,   0,1,0,0);
+        a=16'd20;   b=-16'sd3;   check("DIV 20/-3",      -16'sd6,   0,1,0,0);
+        a=-16'sd20; b=-16'sd3;   check("DIV -20/-3",     16'd6,     0,0,0,0);
+        a=16'h8000; b=16'hFFFF;  check("DIV -32768/-1",  16'h8000,  0,1,0,0);
+        op=`ALU_REM;
+        a=-16'sd20; b=16'sd3;    check("REM -20%3",      -16'sd2,   0,1,0,0);
+        a=16'd20;   b=-16'sd3;   check("REM 20%-3",      16'd2,     0,0,0,0);
+        a=-16'sd20; b=-16'sd3;   check("REM -20%-3",     -16'sd2,   0,1,0,0);
+        a=16'h8000; b=16'hFFFF;  check("REM -32768%-1",  16'h0000,  1,0,0,0);
 
         // ---- 逻辑运算 ----
         op=`ALU_AND;  a=16'hF0F0; b=16'h0FF0; check("AND",  16'h00F0, 0,0,0,0);

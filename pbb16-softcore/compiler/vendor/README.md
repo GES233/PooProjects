@@ -20,13 +20,14 @@ M2libc：`https://github.com/oriansj/M2libc`
 | `cc.h` | 新增独立架构位 PBB16=256 |
 | `cc.c` | `-A pbb16`、RET、能力检查及直接汇编输出，跳过 ELF/M1 尾部 |
 | `cc_types.c` | PBB16 的 register_size=2 |
-| `cc_emit.c` | PBB16 标签格式、立即数发射接口、表达式 `PUSH R0` / `POP R1`、寄存器名映射、`MOV`/`ADD`/`SUB`/`ADDI` 发射、帧内地址计算 `emit_load_relative_to_register` |
-| `cc_core.c` | PBB16 函数/局部变量注释使用 `;`；加减乘除模与一元负号的发射；16 位 `LOD.W R0, 0(R0)` / `STR.W R0, 0(R1)` 访存串 |
+| `cc_emit.c` | PBB16 标签格式、立即数发射接口、表达式 `PUSH R0` / `POP R1`、寄存器名映射、`MOV`/`ADD`/`SUB`/`ADDI` 发射、帧内地址计算 `emit_load_relative_to_register`、`emit_jump_if_zero`（`CMPI`+`JNZ`/`J` 跳板）与 `emit_unconditional_jump`（`J`） |
+| `cc_core.c` | PBB16 函数/局部变量/if 注释使用 `;`；加减乘除模与一元负号的发射；16 位 `LOD.W R0, 0(R0)` / `STR.W R0, 0(R1)` 访存串；比较物化为 0/1（`CMP` + 单标志 `JCC` 跳链，`S⊕V` 判有符号小于） |
 | `cc_macro.c` | 修复上游限制：无换行结尾的源文件最后一个 token 不再误报（仅宏展开才要求后继 token） |
 
 本地后端主体放在 `../pbb16_target.c`（GPL-3.0-or-later）。
-能力检查已扩展到语句级：局部 int 声明/赋值/读取、二元运算与括号、
+能力检查已扩展到语句级：局部 int 声明/赋值/读取、二元运算与括号、比较、
+if/else（块内 return 收尾、跨分支已知值环境合并）、
 16 位有符号中间结果检查（含变量已知值跟踪）及程序规模限制；
 语法分析、代码生成和栈帧回填仍使用上游前端。
-其他架构分支保留；本仓库只验证 PBB16 阶段 1～4，没有声称完成上游全架构回归。
+其他架构分支保留；本仓库只验证 PBB16 阶段 1～5，没有声称完成上游全架构回归。
 如更新上游，需重新核对这些接口，不应只替换源码而跳过测试。

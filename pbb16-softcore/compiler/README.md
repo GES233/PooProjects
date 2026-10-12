@@ -1,27 +1,34 @@
-# PBB16 C 工具链：常量返回、算术表达式与局部变量
+# PBB16 C 工具链：常量返回、算术表达式、局部变量与 if/else
 
 目标：把 `int main(void) { return 42; }` 交给**真实的 M2-Planet C 前端**，
 由新增的 PBB16 后端生成汇编，接上启动代码、现有汇编器，在 CPU 仿真中返回 42。
 
 这是宿主机上的交叉编译链，尚不是完整 C 编译器移植，也不是板端自举。
 第二步已加入二元 `+`、`-` 和括号；第三步加入二元 `*`、`/`、`%` 和一元负号；
-第四步加入局部 `int` 变量的声明、读取与赋值。
-当前支持一个无参数 `int main(void)`（也接受 `main()`），函数体为若干语句加最后的
-`return 表达式;`。语句可以是声明（`int x;`、`int x = 表达式;`，每条一句）、
+第四步加入局部 `int` 变量的声明、读取与赋值；第五步加入六个比较运算
+（结果物化为 0/1）和 `if`/`else`（单语句或 `{ }` 块，块内可提前 `return`）。
+当前支持一个无参数 `int main(void)`（也接受 `main()`），函数体为若干语句，
+最后一条语句必须确定返回（一个 `return`，或两条分支都返回的 `if`/`else`）。
+语句可以是声明（`int x;`、`int x = 表达式;`，每条一句，仅在 main 顶层）、
 赋值（`x = 表达式;`，右结合、可链式、本身也是表达式）或任意表达式语句。
 表达式中的整数常量为 0～32767，接受十进制、八进制和十六进制，以及空白和 C 注释。
-`*` `/` `%` 同级且高于 `+` `-`，同级从左向右结合；括号可以嵌套；运算结果可为负数。
+`*` `/` `%` 同级且高于 `+` `-`，比较运算再低一级（注意：上游前端把 `==` `!=`
+与 `<` `<=` `>` `>=` 压在同一优先级，比标准 C 平，闸门原样镜像这一行为）；
+同级从左向右结合；括号可以嵌套；运算结果可为负数。
 除法和取模是 C99 有符号语义（向零取整、余数符号与被除数一致），直接落在硬件的
 有符号 DIV/REM 上；常量除零和 `-32768 / -1` 在编译期拒绝，不依赖硬件的除零规则。
 
-不支持一元正号（`+1`）、常量后缀、其他类型、数组、参数、其他函数、嵌套块、
-控制流、预处理指令或头文件。这些输入返回非零状态并报错，不会默默跳过。
+不支持一元正号（`+1`）、常量后缀、其他类型、数组、参数、其他函数、循环、
+`&&` `||` `!` `~`、位运算、if/else 体内的声明、嵌套块（除 if/else 体）、
+预处理指令或头文件。这些输入返回非零状态并报错，不会默默跳过。
 所有中间结果都必须落在有符号 16 位范围 −32768～32767；例如 `(32767 + 1) - 1`
 虽然最终数值在范围内，也会在溢出的那一步报错，不把硬件回绕当作有符号 C 语义。
 闸门会跟踪每个局部变量的编译期已知值，所以 `int x = 5; return x * 10000;`
-仍在编译期拒绝；变量参与而值未知的表达式则放行（有符号溢出在 C 里本是未定义行为）。
-当前限定括号最多嵌套 64 层、运算（含一元负号与赋值）最多 256 次、局部变量最多 32 个，
-以限制宿主解析递归和目标程序资源使用。
+仍在编译期拒绝；控制流会按「所有可能下落路径一致」合并已知值——
+`if (c) { x = 2; }` 之后 x 不再已知，`return x * 10000;` 放行
+（有符号溢出在 C 里本是未定义行为）。
+当前限定括号最多嵌套 64 层、运算（含一元负号与赋值）最多 256 次、
+局部变量最多 32 个、if 最多嵌套 16 层，以限制宿主解析递归和目标程序资源使用。
 
 ## 运行
 
@@ -34,7 +41,8 @@ python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return
 python compiler/pbb16cc.py compiler/examples/arithmetic.c -o compiler/build/arithmetic.hex
 python compiler/pbb16cc.py compiler/examples/muldiv.c -o compiler/build/muldiv.hex
 python compiler/pbb16cc.py compiler/examples/locals.c -o compiler/build/locals.hex
-python compiler/test_stage4.py
+python compiler/pbb16cc.py compiler/examples/ifelse.c -o compiler/build/ifelse.hex
+python compiler/test_stage5.py
 ```
 
 `build.py --cc 路径` 可指定宿主 C 编译器；`pbb16cc.py` 检测到源码更新或编译器缺失时
@@ -234,6 +242,67 @@ FUNCTION_main:
 - `pbb16_target.c / validate_declaration、validate_expression`：
   闸门的符号表与环境式常量跟踪。
 
+## 顺着 if (a > b) 阅读
+
+`examples/ifelse.c` 返回 42。这一步有两件事：比较怎么变成 0/1，控制流怎么变成跳转。
+
+PBB16 的 JCC 一条指令只能测一个标志（J8 格式，flg+cm），而有符号小于要看
+`S ⊕ V`（ISA 3.4），所以 `>` 展开成一条短跳链（`common_recursion` 照旧把左值弹进 R1）：
+
+```asm
+    ...左值 a 进 R0... PUSH R0 ...右值 b 进 R0... POP R1
+    CMP R1, R0            ; 左 - 右：Z=相等，S⊕V=有符号小于
+    MOVI R0, 0            ; 默认假；MOVI 不动标志，CMP 的结果还在
+    JZ  CMP_main_0.d      ; 相等 → 不可能 >
+    JV  CMP_main_0.v      ; 减溢出走另一半
+    JNS CMP_main_0.t      ; V=0：S=0 即 S==V → 真
+    J   CMP_main_0.d
+CMP_main_0.v:
+    JS  CMP_main_0.t      ; V=1：S=1 即 S==V → 真
+    J   CMP_main_0.d
+CMP_main_0.t:
+    MOVI R0, 1
+CMP_main_0.d:
+```
+
+标签用与 process_if 相同的全局计数器编号（`CMP_main_N` 的 `.v`/`.t`/`.d`），
+跳链内部最远十几字节，远在 JCC 的 ±128 字节之内。`<`/`<=` 把两个 JS/JNS 对调
+（`<=` 再加一条 `JZ .t`），`==`/`!=` 只看 Z，四条指令就够。
+因为标签要逐实例唯一，这里不能用 general_recursion 的静态字符串，
+改写了自己的递归（`pbb16_relational_recursion`）。
+比较是普通表达式：结果在 R0 里是 0/1，可以赋值、参与算术、直接 return。
+
+if 本身沿用上游 `process_if` 的三段式（ELSE/_END_IF_ 标签），PBB16 发射为：
+
+```asm
+    CMPI R0, 0            ; 条件为 0？（CMPI 零扩展，正好测 0/1）
+    JNZ ELSE_main_1.t     ; 非零 → 跳过下面的长跳；两条之内，恒在 ±128 内
+    J   ELSE_main_1       ; 条件不成立 → else；J 可达 ±1024
+ELSE_main_1.t:
+    ...then 体...
+    J   _END_IF_main_1
+ELSE_main_1:
+    ...else 体...
+_END_IF_main_1:
+```
+
+反条件短跳 + 无条件长跳的跳板是为了绕开 JCC ±128 字节的限制：then 体再长
+也只要求 J 够得着；连 ±1024 都超出的程序由汇编器报越界错误。
+`if`/`else` 体可以是单条语句或 `{ }` 块，块内 `return` 直接发射 epilogue
+（有局部变量时 `MOV R6, R7` + RET，否则只有 RET），函数可以多个出口；
+闸门的额外规矩是 return 必须是所在块的最后一条语句，main 的最后一条语句
+必须确定返回（`if (c) return 1; else return 2;` 也算）。
+
+闸门的常量跟踪跨分支合并：逐槽取「所有可能下落路径一致已知」的交集；
+两条分支都 return 时后续代码不可达，环境整体降为未知。死代码仍完整校验——
+`if (0) { return 200 * 200; }` 照样在编译期报溢出。
+
+建议继续看：
+
+- `cc_core.c / pbb16_relational_expr_stub、pbb16_emit_compare`：六个运算的跳链发射。
+- `cc_emit.c / emit_jump_if_zero、emit_unconditional_jump`：跳板与 `;` 注释的早退分支。
+- `pbb16_target.c / validate_relational、validate_if`：比较层求值与跨分支环境合并。
+
 ## 本阶段的 ABI 与启动约定
 
 | 项目 | 约定 |
@@ -261,20 +330,22 @@ MEM16[EFFC]=0006；RET 后 PC=0006、SP=EFFE，结果仍在 R0。
 
 ## 验证与下一步
 
-`test_stage4.py` 会先运行完整 `test_stage3.py` 回归（逐层套到 `test_stage1.py`，
-也可单独运行），重建宿主编译器并验证 13 组带局部变量的程序仿真：
-声明/赋值/读取、链式赋值与赋值表达式、负数经由变量、8 个局部变量的帧，
-外加 `examples/locals.c` 的端到端检查。测试用独立的 Python 递归下降求值器
-按 C 语义计算期望结果、PUSH 次数、最大临时栈深度和帧字节数（`+localbytes`）。
-拒绝用例覆盖未声明/重复声明/初始化里引用自身、每句多声明符、数组、其他类型、
-保留字命名、嵌套块、已知值常量传播后的溢出与除零、非变量左值、复合赋值、
-控制流、缺分号、return 后的废话和 33 个局部变量。
-阶段一到三的行为保持不变（`+localbytes` 缺省为 0 时 testbench 检查与原样等价）。
+`test_stage5.py` 会先运行完整 `test_stage4.py` 回归（逐层套到 `test_stage1.py`，
+也可单独运行），重建宿主编译器并验证 25 组带比较/控制流的程序仿真：
+六个比较的真假两侧、`-32768` 触发的 V=1 溢出路径、扁平优先级的链式比较
+（`1 < 2 == 1`）、if/else 双向、else-if 链、嵌套 if、块内提前 return、
+比较赋值给变量、赋值作条件、跨分支已知值合并后的放行，
+其中两组的 then 体超过 128 字节（证明 JNZ/J 跳板必需且可用），
+外加 `examples/ifelse.c` 的端到端检查。测试用独立的 Python 递归下降求值器
+按 C 语义执行被取路径，计算期望结果、PUSH 次数与最大临时栈深度（`+localbytes` 不变）。
+拒绝用例覆盖 while/for/do/switch/goto、if 体内的声明、游离块与 else、
+缺括号、双 else、块内 return 后的废话、main 不确定返回、死代码中的常量溢出、
+`&&`/`||`/`!`/`~` 以及 17 层嵌套 if。
+阶段一到四的行为保持不变（`+localbytes` 缺省为 0 时 testbench 检查与原样等价）。
 
 仿真设周期上限，错误以 `$fatal` 退出，不仅打印 FAIL。
 上游完整前端仍在，但 `pbb16_validate_program` 在预处理前拒绝超出本阶段的输入。
 它是功能边界检查，验证后的 token 仍交给原来的 M2 解析器；并未用正则匹配替代 C 编译。
 
-下一步是控制流（`if`/`else` 与比较运算）：需要把比较物化为 0/1（CMP + 条件跳链），
-并处理 JCC ±128 字节、J ±1KB 的跳转范围限制。xv6 源码兼容、目标机运行编译器
-及自举仍未实现。来源、许可证及本地差异见 `vendor/README.md`。
+下一步是循环（`while`/`for`，需要配套的 `break`/`continue` 目标栈与回跳）。
+xv6 源码兼容、目标机运行编译器及自举仍未实现。来源、许可证及本地差异见 `vendor/README.md`。

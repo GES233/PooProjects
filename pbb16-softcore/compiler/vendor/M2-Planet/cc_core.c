@@ -1394,6 +1394,97 @@ void additive_expr_c(void)
 }
 
 
+/* PBB16 stage 5: signed comparisons materialize 0/1 in R0.
+ * common_recursion leaves the left operand in R1 and the right in R0, so
+ * CMP R1, R0 computes left - right: Z = equal, S XOR V = signed less-than
+ * (ISA 3.4). JCC tests a single flag per instruction (J8 format), so the
+ * ordering operators expand into a short branch chain around two MOVI;
+ * every label is within a dozen bytes, far inside the ±128 byte JCC range.
+ * int is the only type, so all comparisons are signed (CMP, never CMPU). */
+enum
+{
+	PBB16_CMP_EQ,
+	PBB16_CMP_NE,
+	PBB16_CMP_LT,
+	PBB16_CMP_LE,
+	PBB16_CMP_GT,
+	PBB16_CMP_GE,
+};
+
+void relational_expr_stub(void);
+
+void pbb16_emit_compare(char* unique_id, int kind)
+{
+	emit_out("CMP R1, R0\nMOVI R0, 0\n");
+	if((PBB16_CMP_EQ == kind) || (PBB16_CMP_NE == kind))
+	{
+		emit_out((PBB16_CMP_EQ == kind) ? "JNZ " : "JZ ");
+		emit_out(unique_id);
+		emit_out(".d\nMOVI R0, 1\n");
+		emit_out(unique_id);
+		emit_out(".d:\n");
+		return;
+	}
+	if(PBB16_CMP_LE == kind)
+	{
+		emit_out("JZ ");
+		emit_out(unique_id);
+		emit_out(".t\n");
+	}
+	if(PBB16_CMP_GT == kind)
+	{
+		emit_out("JZ ");
+		emit_out(unique_id);
+		emit_out(".d\n");
+	}
+	/* V=0: less-than iff S=1; V=1: less-than iff S=0. >=/> swap the two. */
+	emit_out("JV ");
+	emit_out(unique_id);
+	emit_out(".v\n");
+	emit_out(((PBB16_CMP_LT == kind) || (PBB16_CMP_LE == kind)) ? "JS " : "JNS ");
+	emit_out(unique_id);
+	emit_out(".t\nJ ");
+	emit_out(unique_id);
+	emit_out(".d\n");
+	emit_out(unique_id);
+	emit_out(".v:\n");
+	emit_out(((PBB16_CMP_LT == kind) || (PBB16_CMP_LE == kind)) ? "JNS " : "JS ");
+	emit_out(unique_id);
+	emit_out(".t\nJ ");
+	emit_out(unique_id);
+	emit_out(".d\n");
+	emit_out(unique_id);
+	emit_out(".t:\nMOVI R0, 1\n");
+	emit_out(unique_id);
+	emit_out(".d:\n");
+}
+
+/* general_recursion with a per-instance label id instead of a static string. */
+void pbb16_relational_recursion(char* name, int kind, FUNCTION iterate)
+{
+	require(NULL != global_token, "Received EOF in pbb16_relational_recursion\n");
+	if(!match(name, global_token->s)) return;
+
+	char* number_string = int2str(current_count, 10, TRUE);
+	current_count = current_count + 1;
+	char* unique_id = create_unique_id("CMP_", function->s, number_string);
+
+	common_recursion(additive_expr_c);
+	pbb16_emit_compare(unique_id, kind);
+	iterate();
+}
+
+void pbb16_relational_expr_stub(void)
+{
+	pbb16_relational_recursion("<", PBB16_CMP_LT, relational_expr_stub);
+	pbb16_relational_recursion("<=", PBB16_CMP_LE, relational_expr_stub);
+	pbb16_relational_recursion(">=", PBB16_CMP_GE, relational_expr_stub);
+	pbb16_relational_recursion(">", PBB16_CMP_GT, relational_expr_stub);
+	pbb16_relational_recursion("==", PBB16_CMP_EQ, relational_expr_stub);
+	pbb16_relational_recursion("!=", PBB16_CMP_NE, relational_expr_stub);
+}
+
+
 /*
  * relational-expr:
  *         additive_expr
@@ -1405,7 +1496,11 @@ void additive_expr_c(void)
 
 void relational_expr_stub(void)
 {
-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+	if(PBB16 == Architecture)
+	{
+		pbb16_relational_expr_stub();
+	}
+	else if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
 	{
 		arithmetic_recursion(additive_expr_c, "CMP R0 R1 R0\nSET.L R0 R0 1\n", "CMPU R0 R1 R0\nSET.L R0 R0 1\n", "<", relational_expr_stub);
 		arithmetic_recursion(additive_expr_c, "CMP R0 R1 R0\nSET.LE R0 R0 1\n", "CMPU R0 R1 R0\nSET.LE R0 R0 1\n", "<=", relational_expr_stub);
@@ -2170,7 +2265,8 @@ void process_if(void)
 
 	char* unique_id = create_unique_id("", function->s, number_string);
 
-	emit_out("# IF_");
+	if(PBB16 == Architecture) emit_out("; IF_");
+	else emit_out("# IF_");
 	emit_out(unique_id);
 	emit_out("\n");
 

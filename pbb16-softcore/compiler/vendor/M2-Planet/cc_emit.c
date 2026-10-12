@@ -214,6 +214,22 @@ void emit_unconditional_jump(char* prefix, char* name, char* note)
 		emit_out(name);
 		emit_out(" jal");
 	}
+	else if(PBB16 == Architecture)
+	{
+		/* PBB16 comments start with ; — handle the note here and skip
+		 * the shared "# note" suffix below. J is PC-relative ±1024
+		 * bytes; the assembler reports anything farther. */
+		emit_out("J ");
+		emit_out(prefix);
+		emit_out(name);
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
+		return;
+	}
 
 	if(note == NULL)
 	{
@@ -274,6 +290,34 @@ void emit_jump_if_zero(int reg, char* prefix, char* name, char* note)
 		emit_out(prefix);
 		emit_out(name);
 		emit_out(" jal");
+	}
+	else if(PBB16 == Architecture)
+	{
+		require(reg == REGISTER_ZERO, "PBB16: only R0 condition jumps implemented\n");
+		/* JCC reaches only ±128 bytes while J reaches ±1024: hop over the
+		 * long jump with the opposite short condition so if-bodies too
+		 * long for a single JCC still assemble (past ±1024 the assembler
+		 * reports the overflow). The trampoline label derives from the
+		 * already-unique target name. PBB16 comments start with ; — the
+		 * note is handled here and the shared "# note" suffix skipped. */
+		emit_out("CMPI ");
+		emit_out(reg_name);
+		emit_out(", 0\nJNZ ");
+		emit_out(prefix);
+		emit_out(name);
+		emit_out(".t\nJ ");
+		emit_out(prefix);
+		emit_out(name);
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
+		emit_out(prefix);
+		emit_out(name);
+		emit_out(".t:\n");
+		return;
 	}
 
 	if(note == NULL)

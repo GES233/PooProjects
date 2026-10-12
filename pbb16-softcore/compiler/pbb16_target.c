@@ -1,13 +1,18 @@
-/* PBB16 stages 1-4 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-5 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  *
- * Stage 4 grammar (a strict subset of what the upstream parser accepts):
- *   program    := "int" "main" "(" ["void"] ")" "{" { statement } return ";" "}" EOF
- *   statement  := "int" ident ["=" expr] ";"   (declaration, one declarator)
+ * Stage 5 grammar (a strict subset of what the upstream parser accepts):
+ *   program    := "int" "main" "(" ["void"] ")" "{" { statement } "}" EOF
+ *                 (the last statement must definitely return)
+ *   statement  := "int" ident ["=" expr] ";"   (declaration, one declarator,
+ *                                               main's top level only)
  *               | expr ";"                     (expression or assignment)
- *   return     := "return" expr                (must be the last statement)
- *   expr       := ident "=" expr | additive    (assignment is right-associative)
+ *               | "return" expr ";"            (last statement of its block)
+ *               | "if" "(" expr ")" body ["else" body]
+ *   body       := statement-without-declaration | "{" { same } "}"
+ *   expr       := ident "=" expr | relational  (assignment is right-associative)
+ *   relational := additive { ("<"|"<="|">"|">="|"=="|"!=") additive }
  *   additive   := term { ("+" | "-") term }
  *   term       := unary { ("*" | "/" | "%") unary }
  *   unary      := "-" unary | primary
@@ -15,9 +20,11 @@
  *
  * The gate tracks each local's value while it is compile-time known, so
  * constant expressions keep their exact stage 1-3 overflow/div-by-zero
- * rejection even when routed through variables. Once a value depends on
- * something unknown (there is no unknown-producing input yet, but the
- * machinery is staged for it) checks degrade gracefully instead of lying.
+ * rejection even when routed through variables. Control flow snapshots and
+ * merges the environment: a variable stays known after an if only when
+ * every path that can fall through agrees on the same known value. Once a
+ * value depends on something unknown, checks degrade gracefully instead of
+ * lying.
  */
 #include "cc.h"
 #include "cc_emit.h"
@@ -41,7 +48,8 @@ static void unsupported(struct token_list* token, char* message)
     fputs("PBB16: ", stderr);
     fputs(message, stderr);
     fputs("\nSupported: int main(void) { statements; return EXPR; } with int locals,"
-          " assignment, literals 0..32767, unary -, binary + - * / %%, parentheses.\n", stderr);
+          " assignment, literals 0..32767, unary -, binary + - * / %%, parentheses,"
+          " comparisons < <= > >= == !=, and if/else.\n", stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -281,7 +289,51 @@ static struct pbb16_value validate_additive(struct token_list** token, int depth
     return value;
 }
 
-/* expr = ident "=" expr | additive. The assignment's value is the right-hand
+/* relational = additive { ("<"|"<="|">"|">="|"=="|"!=") additive }.
+ * M2-Planet keeps all six operators at one flat precedence level (in C,
+ * == and != sit below the others); the gate mirrors the parser so tracked
+ * values always match the generated code. Comparisons yield 0/1 and can
+ * never overflow. */
+static struct pbb16_value validate_relational(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_additive(token, depth, operations);
+    skip_newlines(token);
+    for(;;)
+    {
+        int op;
+        struct token_list* operator_token;
+        struct pbb16_value right;
+        if(*token == NULL) break;
+        if(match((*token)->s, "<")) op = 0;
+        else if(match((*token)->s, "<=")) op = 1;
+        else if(match((*token)->s, ">")) op = 2;
+        else if(match((*token)->s, ">=")) op = 3;
+        else if(match((*token)->s, "==")) op = 4;
+        else if(match((*token)->s, "!=")) op = 5;
+        else break;
+        operator_token = *token;
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        *token = (*token)->next;
+        right = validate_additive(token, depth, operations);
+        if(value.known && right.known)
+        {
+            int left = value.value;
+            int r = right.value;
+            if(op == 0) value.value = left < r;
+            else if(op == 1) value.value = left <= r;
+            else if(op == 2) value.value = left > r;
+            else if(op == 3) value.value = left >= r;
+            else if(op == 4) value.value = left == r;
+            else value.value = left != r;
+        }
+        else value.known = FALSE;
+        skip_newlines(token);
+    }
+    return value;
+}
+
+/* expr = ident "=" expr | relational. The assignment's value is the right-hand
  * side's value, so chained assignment works; each level costs one PUSH of the
  * target address on the hardware stack, counted as an operation. */
 static struct pbb16_value validate_expression(struct token_list** token, int depth, int* operations)
@@ -308,7 +360,7 @@ static struct pbb16_value validate_expression(struct token_list** token, int dep
         }
     }
     {
-        struct pbb16_value result = validate_additive(token, depth, operations);
+        struct pbb16_value result = validate_relational(token, depth, operations);
         skip_newlines(token);
         if(*token != NULL && match((*token)->s, "="))
             unsupported(*token, "left side of = must be a declared variable");
@@ -354,6 +406,151 @@ static void validate_declaration(struct token_list** token, int* operations)
     expect(token, ";");
 }
 
+/* Control flow snapshots the constant environment and merges it afterwards:
+ * a variable stays compile-time known after an if only when every path that
+ * can fall through agrees on the same known value. */
+static void save_env(int* known, int* values)
+{
+    int i;
+    for(i = 0; i < pbb16_local_count; i = i + 1)
+    {
+        known[i] = pbb16_local_known[i];
+        values[i] = pbb16_local_values[i];
+    }
+}
+
+static void restore_env(int* known, int* values)
+{
+    int i;
+    for(i = 0; i < pbb16_local_count; i = i + 1)
+    {
+        pbb16_local_known[i] = known[i];
+        pbb16_local_values[i] = values[i];
+    }
+}
+
+/* Merge a branch environment into the live one. */
+static void merge_env(int* branch_known, int* branch_values)
+{
+    int i;
+    for(i = 0; i < pbb16_local_count; i = i + 1)
+    {
+        if(!pbb16_local_known[i] || !branch_known[i] ||
+           pbb16_local_values[i] != branch_values[i])
+        {
+            pbb16_local_known[i] = FALSE;
+            pbb16_local_values[i] = 0;
+        }
+    }
+}
+
+static int validate_if(struct token_list** token, int* operations, int block_depth);
+
+/* One statement. Returns TRUE when it definitely returns (a return statement,
+ * or an if whose every path returns). Declarations stay at main's top level
+ * (in_block rejects them): the flat symbol table has no scoping. */
+static int validate_statement(struct token_list** token, int* operations, int block_depth, int in_block)
+{
+    skip_newlines(token);
+    if(*token == NULL) unsupported(*token, "unexpected end of program");
+    if(match((*token)->s, "int"))
+    {
+        if(in_block) unsupported(*token, "declare locals at the top level of main, not inside if/else bodies");
+        validate_declaration(token, operations);
+        return FALSE;
+    }
+    if(match((*token)->s, "return"))
+    {
+        *token = (*token)->next;
+        validate_expression(token, 0, operations);
+        expect(token, ";");
+        return TRUE;
+    }
+    if(match((*token)->s, "if")) return validate_if(token, operations, block_depth);
+    if(match((*token)->s, "else")) unsupported(*token, "else without a matching if");
+    if(match((*token)->s, "{")) unsupported(*token, "blocks are only supported as if/else bodies");
+    validate_expression(token, 0, operations);
+    expect(token, ";");
+    return FALSE;
+}
+
+/* Statements until "}"; returns TRUE when the block definitely returns.
+ * A returning statement must be the last one, same rule as main itself. */
+static int validate_block(struct token_list** token, int* operations, int block_depth)
+{
+    int returned = FALSE;
+    for(;;)
+    {
+        skip_newlines(token);
+        if(*token == NULL) unsupported(*token, "unexpected end of program inside a block");
+        if(match((*token)->s, "}"))
+        {
+            *token = (*token)->next;
+            return returned;
+        }
+        if(returned) unsupported(*token, "a returning statement must be the last in its block");
+        returned = validate_statement(token, operations, block_depth, TRUE);
+    }
+}
+
+static int validate_if_body(struct token_list** token, int* operations, int block_depth)
+{
+    skip_newlines(token);
+    if(*token != NULL && match((*token)->s, "{"))
+    {
+        *token = (*token)->next;
+        return validate_block(token, operations, block_depth);
+    }
+    return validate_statement(token, operations, block_depth, TRUE);
+}
+
+/* "if" "(" expr ")" body ["else" body]. Both bodies are fully validated even
+ * when the condition is compile-time known — dead code still has to be legal.
+ * The environment afterwards merges every path that can fall through; when
+ * no path can, following code is unreachable and the environment degrades to
+ * all-unknown. */
+static int validate_if(struct token_list** token, int* operations, int block_depth)
+{
+    int before_known[PBB16_MAX_LOCALS];
+    int before_values[PBB16_MAX_LOCALS];
+    int branch_known[PBB16_MAX_LOCALS];
+    int branch_values[PBB16_MAX_LOCALS];
+    int then_returns;
+    int else_returns;
+
+    if(block_depth >= 16) unsupported(*token, "if statements nested more than 16 deep");
+    *token = (*token)->next;
+    expect(token, "(");
+    validate_expression(token, 0, operations);
+    expect(token, ")");
+
+    save_env(before_known, before_values);
+    then_returns = validate_if_body(token, operations, block_depth + 1);
+    save_env(branch_known, branch_values);
+    restore_env(before_known, before_values);
+
+    skip_newlines(token);
+    if(*token == NULL || !match((*token)->s, "else"))
+    {
+        /* Without else the before-env always falls through. */
+        if(!then_returns) merge_env(branch_known, branch_values);
+        return FALSE;
+    }
+    *token = (*token)->next;
+    else_returns = validate_if_body(token, operations, block_depth + 1);
+    /* The live environment now holds the else path, branch_* the then path. */
+    if(then_returns && else_returns)
+    {
+        int i;
+        for(i = 0; i < pbb16_local_count; i = i + 1) pbb16_local_known[i] = FALSE;
+        return TRUE;
+    }
+    if(then_returns) return FALSE;      /* only the else path falls through */
+    if(else_returns) restore_env(branch_known, branch_values);
+    else merge_env(branch_known, branch_values);
+    return FALSE;
+}
+
 /* Check capabilities before preprocessing so directives cannot bypass the gate.
  * Keep global_token in place for the original M2 parser after validation.
  */
@@ -361,6 +558,7 @@ void pbb16_validate_program(void)
 {
     struct token_list* token = global_token;
     int operations = 0;
+    int returned = FALSE;
     pbb16_local_count = 0;
     expect(&token, "int");
     expect(&token, "main");
@@ -373,21 +571,13 @@ void pbb16_validate_program(void)
     {
         skip_newlines(&token);
         if(token == NULL) unsupported(token, "unexpected end of program inside main");
-        if(match(token->s, "return"))
+        if(match(token->s, "}"))
         {
-            token = token->next;
-            validate_expression(&token, 0, &operations);
-            expect(&token, ";");
+            if(!returned) unsupported(token, "missing return statement");
             break;
         }
-        if(match(token->s, "int")) validate_declaration(&token, &operations);
-        else if(match(token->s, "{")) unsupported(token, "nested blocks are not supported yet");
-        else if(match(token->s, "}")) unsupported(token, "missing return statement");
-        else
-        {
-            validate_expression(&token, 0, &operations);
-            expect(&token, ";");
-        }
+        if(returned) unsupported(token, "a returning statement must be the last in its block");
+        returned = validate_statement(&token, &operations, 0, FALSE);
     }
     expect(&token, "}");
     skip_newlines(&token);

@@ -173,7 +173,6 @@ def run_tests():
         "int x = 1; x + 2 = 3; return x;",          # left side of = must be a variable
         "1 = 2; return 0;",                         # ... literally
         "int x = 1; x += 1; return x;",             # compound assignment is a later stage
-        "if (1) return 1; return 0;",               # control flow is the next stage
         "int x = 1 return x;",                      # missing semicolon
         "int x = 1; return x; int y = 2;",          # return must be the last statement
     ]

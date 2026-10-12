@@ -71,7 +71,6 @@ def run_tests():
         "int main(void) { return 65536; }", "int main(void) { return 9999999999999999999999999999; }",
         "int main(void) { return 08; }", "int main(void) { return 0x; }",
         "int main(void) { return 42u; }",
-        "int main(void) { if(1) return 42; return 0; }",
         "int main(void) { return; }", "int main(void) { return 42 }",
         "int main(int x) { return 42; }", "int other(void) { return 42; }",
         "int main(void) { return 42; } int other(void) { return 0; }",

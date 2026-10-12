@@ -2458,7 +2458,8 @@ void process_for(void)
 
 	char* unique_id = create_unique_id("", function->s, number_string);
 
-	emit_out("# FOR_initialization_");
+	if(PBB16 == Architecture) emit_out("; FOR_initialization_");
+	else emit_out("# FOR_initialization_");
 	emit_out(unique_id);
 	emit_out("\n");
 
@@ -2603,7 +2604,8 @@ void process_while(void)
 
 	emit_jump_if_zero(REGISTER_ZERO, "END_WHILE_", unique_id, "Jump to end");
 
-	emit_out("# THEN_while_");
+	if(PBB16 == Architecture) emit_out("; THEN_while_");
+	else emit_out("# THEN_while_");
 	emit_out(unique_id);
 	emit_out("\n");
 

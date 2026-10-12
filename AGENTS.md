@@ -34,16 +34,18 @@
 声明、读取与赋值（每条声明一个声明符、仅 main 顶层，赋值是右结合表达式，限 32 个局部变量）；
 六个比较运算（结果物化为 0/1，`CMP` + 单标志 `JCC` 跳链实现 `S⊕V`；上游把 `==`/`!=`
 与 `<`/`<=`/`>`/`>=` 压在同一优先级，闸门原样镜像）和 `if`/`else`（单语句或 `{ }` 块、
-块内可提前 return、限 16 层嵌套；条件跳用 `CMPI`+`JNZ`/`J` 跳板绕开 JCC ±128 字节限制）；
+块内可提前 return、控制流限 16 层嵌套；条件跳用 `CMPI`+`JNZ`/`J` 跳板绕开 JCC ±128 字节限制）；
+`while`/`do`-`while`/`for` 循环与 `break`/`continue`（for 的条件与增量必填、初始化可空；
+循环不算「确定返回」，出循环时已知值按「进入前 ∧ 体尾一致」合并，体内常量检查只覆盖首圈）；
 中间结果限有符号 16 位，括号最多 64 层、运算最多 256 次，常量除零在编译期拒绝；
 闸门跟踪变量的编译期已知值（跨分支按「所有下落路径一致」合并），常量表达式经变量转手后仍做溢出检查。
-一元正号、其他类型、数组、参数、多函数、循环、逻辑/位运算、游离块等其余输入明确拒绝。
+一元正号、其他类型、数组、参数、多函数、逻辑/位运算、游离块等其余输入明确拒绝。
 帧布局：R7=LOCALS 帧基址（prologue `MOV R7, R6; ADDI R6, -N` 回填生成，epilogue
 `MOV R6, R7`），局部第 k 个 int 在 R7−2(k+1)，经 `MOV+ADDI` 算地址后偏移 0 访存。
 需要宿主 GCC、Python 3、iverilog/vvp。
 在 `pbb16-softcore/` 下运行 `python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return42.hex`，
 生成函数汇编、带启动代码的汇编和 memh 映像；完整说明见 `compiler/README.md`。
-修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage5.py`（包含 stage1-4 回归）。
+修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage6.py`（包含 stage1-5 回归）。
 注意：`tb/tb_c_return.v` 按 `+localbytes=N` 放开帧窗口内的 LOD/STR 访问检查；
 源文件可以没有结尾换行（上游 cc_macro.c 的 maybe_expand 已修）。
 这不是完整 C/xv6 移植或板端自举，后续需逐项实现并测试。

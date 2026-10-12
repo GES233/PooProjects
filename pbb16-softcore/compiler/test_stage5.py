@@ -228,9 +228,6 @@ def run_tests():
              depth=example_depth, localbytes=example_locals)
 
     rejected = [
-        "while (1) { return 1; } return 0;",              # loops are a later stage
-        "for (;;) { return 1; } return 0;",
-        "do { return 1; } while (0); return 0;",
         "switch (1) { case 1: return 1; } return 0;",
         "goto end; return 0;",
         "if (1) int x = 2; return 0;",                    # declarations stay at top level

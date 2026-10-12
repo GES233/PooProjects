@@ -380,6 +380,32 @@ void emit_jump_if_not_zero(int reg, char* prefix, char* name, char* note)
 		emit_out(name);
 		emit_out(" jal\n");
 	}
+	else if(PBB16 == Architecture)
+	{
+		require(reg == REGISTER_ZERO, "PBB16: only R0 condition jumps implemented\n");
+		/* Mirror of emit_jump_if_zero: a short JZ hops over the long J,
+		 * so do-while back-edges beyond ±128 bytes still assemble.
+		 * PBB16 comments start with ; — the note is handled here and the
+		 * shared "# note" suffix skipped. */
+		emit_out("CMPI ");
+		emit_out(reg_name);
+		emit_out(", 0\nJZ ");
+		emit_out(prefix);
+		emit_out(name);
+		emit_out(".t\nJ ");
+		emit_out(prefix);
+		emit_out(name);
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
+		emit_out(prefix);
+		emit_out(name);
+		emit_out(".t:\n");
+		return;
+	}
 
 	if(note == NULL)
 	{

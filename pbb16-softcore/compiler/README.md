@@ -1,4 +1,4 @@
-# PBB16 C 工具链：常量返回、算术表达式、局部变量与 if/else
+# PBB16 C 工具链：常量返回、算术表达式、局部变量、if/else 与循环
 
 目标：把 `int main(void) { return 42; }` 交给**真实的 M2-Planet C 前端**，
 由新增的 PBB16 后端生成汇编，接上启动代码、现有汇编器，在 CPU 仿真中返回 42。
@@ -6,9 +6,11 @@
 这是宿主机上的交叉编译链，尚不是完整 C 编译器移植，也不是板端自举。
 第二步已加入二元 `+`、`-` 和括号；第三步加入二元 `*`、`/`、`%` 和一元负号；
 第四步加入局部 `int` 变量的声明、读取与赋值；第五步加入六个比较运算
-（结果物化为 0/1）和 `if`/`else`（单语句或 `{ }` 块，块内可提前 `return`）。
+（结果物化为 0/1）和 `if`/`else`；第六步加入 `while`、`do`-`while`、`for`
+（`for` 的条件与增量表达式必填、初始化可空）以及 `break`/`continue`。
 当前支持一个无参数 `int main(void)`（也接受 `main()`），函数体为若干语句，
-最后一条语句必须确定返回（一个 `return`，或两条分支都返回的 `if`/`else`）。
+最后一条语句必须确定返回（一个 `return`，或两条分支都返回的 `if`/`else`；
+循环即使 `while (1) { return x; }` 也不算——保守约定）。
 语句可以是声明（`int x;`、`int x = 表达式;`，每条一句，仅在 main 顶层）、
 赋值（`x = 表达式;`，右结合、可链式、本身也是表达式）或任意表达式语句。
 表达式中的整数常量为 0～32767，接受十进制、八进制和十六进制，以及空白和 C 注释。
@@ -18,17 +20,18 @@
 除法和取模是 C99 有符号语义（向零取整、余数符号与被除数一致），直接落在硬件的
 有符号 DIV/REM 上；常量除零和 `-32768 / -1` 在编译期拒绝，不依赖硬件的除零规则。
 
-不支持一元正号（`+1`）、常量后缀、其他类型、数组、参数、其他函数、循环、
-`&&` `||` `!` `~`、位运算、if/else 体内的声明、嵌套块（除 if/else 体）、
+不支持一元正号（`+1`）、常量后缀、其他类型、数组、参数、其他函数、
+`&&` `||` `!` `~`、位运算、if/else/循环体内的声明、`for` 头的声明、
 预处理指令或头文件。这些输入返回非零状态并报错，不会默默跳过。
 所有中间结果都必须落在有符号 16 位范围 −32768～32767；例如 `(32767 + 1) - 1`
 虽然最终数值在范围内，也会在溢出的那一步报错，不把硬件回绕当作有符号 C 语义。
 闸门会跟踪每个局部变量的编译期已知值，所以 `int x = 5; return x * 10000;`
 仍在编译期拒绝；控制流会按「所有可能下落路径一致」合并已知值——
-`if (c) { x = 2; }` 之后 x 不再已知，`return x * 10000;` 放行
-（有符号溢出在 C 里本是未定义行为）。
+`if (c) { x = 2; }` 之后或循环体（可能跑零圈或多圈）之后 x 不再已知，
+`return x * 10000;` 放行（有符号溢出在 C 里本是未定义行为）。
+注意循环体内的常量检查只覆盖第一圈的取值（不做不动点迭代）。
 当前限定括号最多嵌套 64 层、运算（含一元负号与赋值）最多 256 次、
-局部变量最多 32 个、if 最多嵌套 16 层，以限制宿主解析递归和目标程序资源使用。
+局部变量最多 32 个、控制流最多嵌套 16 层，以限制宿主解析递归和目标程序资源使用。
 
 ## 运行
 
@@ -42,7 +45,8 @@ python compiler/pbb16cc.py compiler/examples/arithmetic.c -o compiler/build/arit
 python compiler/pbb16cc.py compiler/examples/muldiv.c -o compiler/build/muldiv.hex
 python compiler/pbb16cc.py compiler/examples/locals.c -o compiler/build/locals.hex
 python compiler/pbb16cc.py compiler/examples/ifelse.c -o compiler/build/ifelse.hex
-python compiler/test_stage5.py
+python compiler/pbb16cc.py compiler/examples/loops.c -o compiler/build/loops.hex
+python compiler/test_stage6.py
 ```
 
 `build.py --cc 路径` 可指定宿主 C 编译器；`pbb16cc.py` 检测到源码更新或编译器缺失时
@@ -303,6 +307,55 @@ _END_IF_main_1:
 - `cc_emit.c / emit_jump_if_zero、emit_unconditional_jump`：跳板与 `;` 注释的早退分支。
 - `pbb16_target.c / validate_relational、validate_if`：比较层求值与跨分支环境合并。
 
+## 顺着 while 循环阅读
+
+`examples/loops.c` 返回 42。循环在上游就是纯标签+跳转，`while` 是顶测试：
+
+```asm
+WHILE_main_0:                 ; continue 的目标
+    ...条件表达式 → R0...
+    CMPI R0, 0
+    JNZ END_WHILE_main_0.t    ; 跳板：为真 → 跳过长跳
+    J   END_WHILE_main_0      ; 为假 → 出循环（同 if 的 ELSE 跳板）
+END_WHILE_main_0.t:
+    ...循环体...
+    J WHILE_main_0            ; 回跳（J，±1024）
+END_WHILE_main_0:             ; break 的目标
+```
+
+`for` 的布局是「旋转」过的：初始化只跑一次，条件顶测试，`continue` 落在增量上：
+
+```asm
+    ...初始化...
+FOR_main_1:
+    ...条件 → R0... 跳板 → FOR_END_main_1
+    J FOR_THEN_main_1         ; 条件为真 → 越过增量代码进循环体
+FOR_ITER_main_1:              ; continue 的目标
+    ...增量...
+    J FOR_main_1
+FOR_THEN_main_1:
+    ...循环体...
+    J FOR_ITER_main_1
+FOR_END_main_1:               ; break 的目标
+```
+
+`do`-`while` 是底测试：体先跑一遍，条件为真经 `JZ`/`J` 镜像跳板
+（`emit_jump_if_not_zero`）跳回 `DO_main_N`。`break`/`continue` 的目标由上游的
+全局「目标栈」（`break_target_head`/`continue_target_head` 等四个变量，每个循环
+入口保存旧值、出口恢复）拼成标签名，嵌套循环天然成立。
+
+闸门侧的三条新规矩：循环永远不算「确定返回」（`while (1) { return 1; }` 后面
+仍要兜底 return）；循环体可能跑零圈或多圈，所以出循环时已知值环境按
+「进入前 ∧ 体尾一致」合并（与无 else 的 if 同一个 `merge_env`）；体内的常量检查
+只覆盖第一圈取值。`break`/`continue` 与 `return` 一样必须是块内最后一条语句。
+
+建议继续看：
+
+- `cc_core.c / process_while、process_for、process_do`：上游的标签布局与目标栈。
+- `cc_emit.c / emit_jump_if_not_zero`：`JZ`/`J` 镜像跳板。
+- `pbb16_target.c / validate_loop_body、validate_while、validate_do、validate_for`：
+  循环的环境合并；`for` 头按 token 顺序（初始化、条件、增量）验证。
+
 ## 本阶段的 ABI 与启动约定
 
 | 项目 | 约定 |
@@ -330,22 +383,23 @@ MEM16[EFFC]=0006；RET 后 PC=0006、SP=EFFE，结果仍在 R0。
 
 ## 验证与下一步
 
-`test_stage5.py` 会先运行完整 `test_stage4.py` 回归（逐层套到 `test_stage1.py`，
-也可单独运行），重建宿主编译器并验证 25 组带比较/控制流的程序仿真：
-六个比较的真假两侧、`-32768` 触发的 V=1 溢出路径、扁平优先级的链式比较
-（`1 < 2 == 1`）、if/else 双向、else-if 链、嵌套 if、块内提前 return、
-比较赋值给变量、赋值作条件、跨分支已知值合并后的放行，
-其中两组的 then 体超过 128 字节（证明 JNZ/J 跳板必需且可用），
-外加 `examples/ifelse.c` 的端到端检查。测试用独立的 Python 递归下降求值器
-按 C 语义执行被取路径，计算期望结果、PUSH 次数与最大临时栈深度（`+localbytes` 不变）。
-拒绝用例覆盖 while/for/do/switch/goto、if 体内的声明、游离块与 else、
-缺括号、双 else、块内 return 后的废话、main 不确定返回、死代码中的常量溢出、
-`&&`/`||`/`!`/`~` 以及 17 层嵌套 if。
-阶段一到四的行为保持不变（`+localbytes` 缺省为 0 时 testbench 检查与原样等价）。
+`test_stage6.py` 会先运行完整 `test_stage5.py` 回归（逐层套到 `test_stage1.py`，
+也可单独运行），重建宿主编译器并验证 21 组带循环的程序仿真：
+while/do-while/for 三个形式、首圈即假与只跑一圈的边界、单语句体、空初始化、
+条件里的赋值、break/continue（含 for 里 continue 落在增量上的旋转布局）、
+嵌套循环、循环内提前 return、循环合并后的已知值放行，
+其中两组的循环体超过 128 字节（while 出口跳板与 do-while 回跳跳板都被真实命中），
+外加 `examples/loops.c` 的端到端检查。测试用独立的 Python 求值器真实执行循环
+（同一批 token 每圈重新解析，带迭代上限防死循环），break 会跳过 for 的增量——
+这个细节错一位就会被 testbench 的 PUSH 计数抓住。
+拒绝用例覆盖循环外 break/continue、循环不兜底 return、break/continue 后的废话、
+for 头声明与缺条件/缺增量、do-while 缺分号/缺 while、循环体内声明和 17 层嵌套。
+阶段一到五的行为保持不变。
 
 仿真设周期上限，错误以 `$fatal` 退出，不仅打印 FAIL。
 上游完整前端仍在，但 `pbb16_validate_program` 在预处理前拒绝超出本阶段的输入。
 它是功能边界检查，验证后的 token 仍交给原来的 M2 解析器；并未用正则匹配替代 C 编译。
 
-下一步是循环（`while`/`for`，需要配套的 `break`/`continue` 目标栈与回跳）。
+下一步是多函数与参数（调用约定：参数怎么传、caller/callee-saved 怎么分，
+闸门的函数签名表）；之后 `&&`/`||`/`!`、位运算、全局数据。
 xv6 源码兼容、目标机运行编译器及自举仍未实现。来源、许可证及本地差异见 `vendor/README.md`。

@@ -1,8 +1,8 @@
-/* PBB16 stages 1-5 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-6 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  *
- * Stage 5 grammar (a strict subset of what the upstream parser accepts):
+ * Stage 6 grammar (a strict subset of what the upstream parser accepts):
  *   program    := "int" "main" "(" ["void"] ")" "{" { statement } "}" EOF
  *                 (the last statement must definitely return)
  *   statement  := "int" ident ["=" expr] ";"   (declaration, one declarator,
@@ -10,6 +10,10 @@
  *               | expr ";"                     (expression or assignment)
  *               | "return" expr ";"            (last statement of its block)
  *               | "if" "(" expr ")" body ["else" body]
+ *               | "while" "(" expr ")" body
+ *               | "do" body "while" "(" expr ")" ";"
+ *               | "for" "(" [expr] ";" expr ";" expr ")" body
+ *               | "break" ";" | "continue" ";" (loops only, last in block)
  *   body       := statement-without-declaration | "{" { same } "}"
  *   expr       := ident "=" expr | relational  (assignment is right-associative)
  *   relational := additive { ("<"|"<="|">"|">="|"=="|"!=") additive }
@@ -22,9 +26,11 @@
  * constant expressions keep their exact stage 1-3 overflow/div-by-zero
  * rejection even when routed through variables. Control flow snapshots and
  * merges the environment: a variable stays known after an if only when
- * every path that can fall through agrees on the same known value. Once a
- * value depends on something unknown, checks degrade gracefully instead of
- * lying.
+ * every path that can fall through agrees on the same known value. Loops
+ * merge the pre-loop state with the body end (the body may run zero or more
+ * times); known-value checks inside a loop body cover first-iteration
+ * values only. Once a value depends on something unknown, checks degrade
+ * gracefully instead of lying.
  */
 #include "cc.h"
 #include "cc_emit.h"
@@ -41,6 +47,7 @@ static char* pbb16_local_names[PBB16_MAX_LOCALS];
 static int pbb16_local_known[PBB16_MAX_LOCALS];
 static int pbb16_local_values[PBB16_MAX_LOCALS];
 static int pbb16_local_count;
+static int pbb16_loop_depth;
 
 static void unsupported(struct token_list* token, char* message)
 {
@@ -49,7 +56,7 @@ static void unsupported(struct token_list* token, char* message)
     fputs(message, stderr);
     fputs("\nSupported: int main(void) { statements; return EXPR; } with int locals,"
           " assignment, literals 0..32767, unary -, binary + - * / %%, parentheses,"
-          " comparisons < <= > >= == !=, and if/else.\n", stderr);
+          " comparisons < <= > >= == !=, if/else, while/do-while/for, break/continue.\n", stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -445,17 +452,21 @@ static void merge_env(int* branch_known, int* branch_values)
 }
 
 static int validate_if(struct token_list** token, int* operations, int block_depth);
+static int validate_while(struct token_list** token, int* operations, int block_depth);
+static int validate_do(struct token_list** token, int* operations, int block_depth);
+static int validate_for(struct token_list** token, int* operations, int block_depth);
 
-/* One statement. Returns TRUE when it definitely returns (a return statement,
- * or an if whose every path returns). Declarations stay at main's top level
- * (in_block rejects them): the flat symbol table has no scoping. */
+/* One statement. Returns TRUE when it never falls through (a return, a
+ * break/continue, or an if whose every path does one of those). Declarations
+ * stay at main's top level (in_block rejects them): the flat symbol table
+ * has no scoping. */
 static int validate_statement(struct token_list** token, int* operations, int block_depth, int in_block)
 {
     skip_newlines(token);
     if(*token == NULL) unsupported(*token, "unexpected end of program");
     if(match((*token)->s, "int"))
     {
-        if(in_block) unsupported(*token, "declare locals at the top level of main, not inside if/else bodies");
+        if(in_block) unsupported(*token, "declare locals at the top level of main, not inside if/else/loop bodies");
         validate_declaration(token, operations);
         return FALSE;
     }
@@ -467,18 +478,29 @@ static int validate_statement(struct token_list** token, int* operations, int bl
         return TRUE;
     }
     if(match((*token)->s, "if")) return validate_if(token, operations, block_depth);
+    if(match((*token)->s, "while")) return validate_while(token, operations, block_depth);
+    if(match((*token)->s, "for")) return validate_for(token, operations, block_depth);
+    if(match((*token)->s, "do")) return validate_do(token, operations, block_depth);
+    if(match((*token)->s, "break") || match((*token)->s, "continue"))
+    {
+        if(pbb16_loop_depth == 0)
+            unsupported(*token, "break/continue outside a loop");
+        *token = (*token)->next;
+        expect(token, ";");
+        return TRUE;
+    }
     if(match((*token)->s, "else")) unsupported(*token, "else without a matching if");
-    if(match((*token)->s, "{")) unsupported(*token, "blocks are only supported as if/else bodies");
+    if(match((*token)->s, "{")) unsupported(*token, "blocks are only supported as if/else/loop bodies");
     validate_expression(token, 0, operations);
     expect(token, ";");
     return FALSE;
 }
 
-/* Statements until "}"; returns TRUE when the block definitely returns.
- * A returning statement must be the last one, same rule as main itself. */
+/* Statements until "}"; returns TRUE when the block never falls through.
+ * A non-falling-through statement must be the last one, same rule as main. */
 static int validate_block(struct token_list** token, int* operations, int block_depth)
 {
-    int returned = FALSE;
+    int terminated = FALSE;
     for(;;)
     {
         skip_newlines(token);
@@ -486,14 +508,15 @@ static int validate_block(struct token_list** token, int* operations, int block_
         if(match((*token)->s, "}"))
         {
             *token = (*token)->next;
-            return returned;
+            return terminated;
         }
-        if(returned) unsupported(*token, "a returning statement must be the last in its block");
-        returned = validate_statement(token, operations, block_depth, TRUE);
+        if(terminated) unsupported(*token, "statement after return/break/continue in the same block");
+        terminated = validate_statement(token, operations, block_depth, TRUE);
     }
 }
 
-static int validate_if_body(struct token_list** token, int* operations, int block_depth)
+/* An if/loop body: a single statement or a braced block. */
+static int validate_body(struct token_list** token, int* operations, int block_depth)
 {
     skip_newlines(token);
     if(*token != NULL && match((*token)->s, "{"))
@@ -518,14 +541,14 @@ static int validate_if(struct token_list** token, int* operations, int block_dep
     int then_returns;
     int else_returns;
 
-    if(block_depth >= 16) unsupported(*token, "if statements nested more than 16 deep");
+    if(block_depth >= 16) unsupported(*token, "control flow nested more than 16 deep");
     *token = (*token)->next;
     expect(token, "(");
     validate_expression(token, 0, operations);
     expect(token, ")");
 
     save_env(before_known, before_values);
-    then_returns = validate_if_body(token, operations, block_depth + 1);
+    then_returns = validate_body(token, operations, block_depth + 1);
     save_env(branch_known, branch_values);
     restore_env(before_known, before_values);
 
@@ -537,7 +560,7 @@ static int validate_if(struct token_list** token, int* operations, int block_dep
         return FALSE;
     }
     *token = (*token)->next;
-    else_returns = validate_if_body(token, operations, block_depth + 1);
+    else_returns = validate_body(token, operations, block_depth + 1);
     /* The live environment now holds the else path, branch_* the then path. */
     if(then_returns && else_returns)
     {
@@ -551,6 +574,75 @@ static int validate_if(struct token_list** token, int* operations, int block_dep
     return FALSE;
 }
 
+/* Validate a loop body and merge its end environment into the pre-loop one:
+ * the body may run zero or more times, so a variable stays known only when
+ * both agree. Known-value checks inside the body use first-iteration values. */
+static void validate_loop_body(struct token_list** token, int* operations, int block_depth)
+{
+    int before_known[PBB16_MAX_LOCALS];
+    int before_values[PBB16_MAX_LOCALS];
+    int body_known[PBB16_MAX_LOCALS];
+    int body_values[PBB16_MAX_LOCALS];
+
+    save_env(before_known, before_values);
+    pbb16_loop_depth = pbb16_loop_depth + 1;
+    validate_body(token, operations, block_depth);
+    pbb16_loop_depth = pbb16_loop_depth - 1;
+    save_env(body_known, body_values);
+    restore_env(before_known, before_values);
+    merge_env(body_known, body_values);
+}
+
+/* Loops never definitely return (conservative: even while(1) { return x; }),
+ * so main still needs a trailing return after a loop. */
+static int validate_while(struct token_list** token, int* operations, int block_depth)
+{
+    if(block_depth >= 16) unsupported(*token, "control flow nested more than 16 deep");
+    *token = (*token)->next;
+    expect(token, "(");
+    validate_expression(token, 0, operations);
+    expect(token, ")");
+    validate_loop_body(token, operations, block_depth + 1);
+    return FALSE;
+}
+
+static int validate_do(struct token_list** token, int* operations, int block_depth)
+{
+    if(block_depth >= 16) unsupported(*token, "control flow nested more than 16 deep");
+    *token = (*token)->next;
+    validate_loop_body(token, operations, block_depth + 1);
+    expect(token, "while");
+    expect(token, "(");
+    /* The condition sees the merged environment, not the body end. */
+    validate_expression(token, 0, operations);
+    expect(token, ")");
+    expect(token, ";");
+    return FALSE;
+}
+
+/* "for" "(" [expr] ";" expr ";" expr ")" body. The upstream parser requires
+ * the condition and increment expressions (only the init may be empty), and
+ * the gate validates the header in token order: init, condition, increment,
+ * then the body. for-init declarations are rejected like all in-block ones. */
+static int validate_for(struct token_list** token, int* operations, int block_depth)
+{
+    if(block_depth >= 16) unsupported(*token, "control flow nested more than 16 deep");
+    *token = (*token)->next;
+    expect(token, "(");
+    skip_newlines(token);
+    if(*token != NULL && match((*token)->s, "int"))
+        unsupported(*token, "declare locals at the top level of main, not in a for header");
+    if(*token != NULL && !match((*token)->s, ";"))
+        validate_expression(token, 0, operations);
+    expect(token, ";");
+    validate_expression(token, 0, operations);
+    expect(token, ";");
+    validate_expression(token, 0, operations);
+    expect(token, ")");
+    validate_loop_body(token, operations, block_depth + 1);
+    return FALSE;
+}
+
 /* Check capabilities before preprocessing so directives cannot bypass the gate.
  * Keep global_token in place for the original M2 parser after validation.
  */
@@ -560,6 +652,7 @@ void pbb16_validate_program(void)
     int operations = 0;
     int returned = FALSE;
     pbb16_local_count = 0;
+    pbb16_loop_depth = 0;
     expect(&token, "int");
     expect(&token, "main");
     expect(&token, "(");
@@ -576,7 +669,7 @@ void pbb16_validate_program(void)
             if(!returned) unsupported(token, "missing return statement");
             break;
         }
-        if(returned) unsupported(token, "a returning statement must be the last in its block");
+        if(returned) unsupported(token, "statement after return/break/continue in the same block");
         returned = validate_statement(&token, &operations, 0, FALSE);
     }
     expect(&token, "}");

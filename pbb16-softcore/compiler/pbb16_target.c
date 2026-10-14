@@ -1,8 +1,8 @@
-/* PBB16 stages 1-7 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-8 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  *
- * Stage 7 grammar (a strict subset of what the upstream parser accepts):
+ * Stage 8 grammar (a strict subset of what the upstream parser accepts):
  *   program    := { function } EOF (exactly one zero-argument main)
  *   function   := "int" ident "(" ["void" | params] ")"
  *                 "{" { statement } "}"
@@ -17,11 +17,13 @@
  *               | "for" "(" [expr] ";" expr ";" expr ")" body
  *               | "break" ";" | "continue" ";" (loops only, last in block)
  *   body       := statement-without-declaration | "{" { same } "}"
- *   expr       := ident "=" expr | relational  (assignment is right-associative)
+ *   expr       := ident "=" expr | logical-or  (assignment is right-associative)
+ *   logical-or := logical-and { "||" logical-and }
+ *   logical-and:= relational { "&&" relational }
  *   relational := additive { ("<"|"<="|">"|">="|"=="|"!=") additive }
  *   additive   := term { ("+" | "-") term }
  *   term       := unary { ("*" | "/" | "%") unary }
- *   unary      := "-" unary | primary
+ *   unary      := ("-" | "!") unary | primary
  *   primary    := literal | ident | ident "(" [arguments] ")" | "(" expr ")"
  *   arguments  := expr { "," expr }
  *
@@ -63,9 +65,9 @@ static void unsupported(struct token_list* token, char* message)
     fputs("PBB16: ", stderr);
     fputs(message, stderr);
     fputs("\nSupported: int functions with fixed int parameters, int main(void), int locals,"
-          " assignment, literals 0..32767, unary -, binary + - * / %%, parentheses,"
+          " assignment, literals 0..32767, unary - !, binary + - * / %%, parentheses,"
           " calls, comparisons < <= > >= == !=, if/else, while/do-while/for,"
-          " break/continue.\n", stderr);
+          " break/continue, short-circuit && ||.\n", stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -167,6 +169,9 @@ static int validate_literal(struct token_list* token)
 }
 
 static struct pbb16_value validate_expression(struct token_list** token, int depth, int* operations);
+static void save_env(int* known, int* values);
+static void restore_env(int* known, int* values);
+static void merge_env(int* branch_known, int* branch_values);
 
 static struct pbb16_value validate_call(struct token_list** token, int depth, int* operations)
 {
@@ -240,23 +245,26 @@ static struct pbb16_value validate_primary(struct token_list** token, int depth,
     exit(EXIT_FAILURE);
 }
 
-/* unary = "-" unary | primary. Upstream handles unary minus in primary_expr
- * as 0 - x, so the gate mirrors it as one more counted operation. */
+/* unary = ("-" | "!") unary | primary. Both operators are handled recursively
+ * by upstream primary_expr and each counts as one operation. Logical negation
+ * always materializes a normalized 0/1 value. */
 static struct pbb16_value validate_unary(struct token_list** token, int depth, int* operations)
 {
     skip_newlines(token);
-    if(*token != NULL && match((*token)->s, "-"))
+    if(*token != NULL && (match((*token)->s, "-") || match((*token)->s, "!")))
     {
         struct token_list* operator_token = *token;
+        int logical_not = match(operator_token->s, "!");
         *operations = *operations + 1;
         if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
         *token = (*token)->next;
         struct pbb16_value value = validate_unary(token, depth, operations);
         if(value.known)
         {
-            if(value.value == (-32767 - 1))
+            if(logical_not) value.value = value.value == 0;
+            else if(value.value == (-32767 - 1))
                 unsupported(operator_token, "intermediate result exceeds signed 16-bit range");
-            value.value = -value.value;
+            else value.value = -value.value;
         }
         return value;
     }
@@ -394,7 +402,107 @@ static struct pbb16_value validate_relational(struct token_list** token, int dep
     return value;
 }
 
-/* expr = ident "=" expr | relational. The assignment's value is the right-hand
+/* The right operand of &&/|| is always parsed and validated, but assignments
+ * in it affect the live constant environment only on paths where it executes.
+ * This mirrors runtime short-circuiting without treating dead source as exempt
+ * from the subset's syntax and signed-16-bit checks. */
+static struct pbb16_value validate_logical_and(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_relational(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && match((*token)->s, "&&"))
+    {
+        int before_known[PBB16_MAX_LOCALS];
+        int before_values[PBB16_MAX_LOCALS];
+        struct token_list* operator_token = *token;
+        struct pbb16_value left = value;
+        struct pbb16_value right;
+
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        save_env(before_known, before_values);
+        *token = (*token)->next;
+        right = validate_relational(token, depth, operations);
+
+        if(left.known && left.value == 0)
+            restore_env(before_known, before_values);
+        else if(!left.known)
+            merge_env(before_known, before_values);
+
+        if(left.known && left.value == 0)
+        {
+            value.known = TRUE;
+            value.value = 0;
+        }
+        else if(left.known && right.known)
+        {
+            value.known = TRUE;
+            value.value = right.value != 0;
+        }
+        else if(!left.known && right.known && right.value == 0)
+        {
+            value.known = TRUE;
+            value.value = 0;
+        }
+        else
+        {
+            value.known = FALSE;
+            value.value = 0;
+        }
+        skip_newlines(token);
+    }
+    return value;
+}
+
+static struct pbb16_value validate_logical_or(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_logical_and(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && match((*token)->s, "||"))
+    {
+        int before_known[PBB16_MAX_LOCALS];
+        int before_values[PBB16_MAX_LOCALS];
+        struct token_list* operator_token = *token;
+        struct pbb16_value left = value;
+        struct pbb16_value right;
+
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        save_env(before_known, before_values);
+        *token = (*token)->next;
+        right = validate_logical_and(token, depth, operations);
+
+        if(left.known && left.value != 0)
+            restore_env(before_known, before_values);
+        else if(!left.known)
+            merge_env(before_known, before_values);
+
+        if(left.known && left.value != 0)
+        {
+            value.known = TRUE;
+            value.value = 1;
+        }
+        else if(left.known && right.known)
+        {
+            value.known = TRUE;
+            value.value = right.value != 0;
+        }
+        else if(!left.known && right.known && right.value != 0)
+        {
+            value.known = TRUE;
+            value.value = 1;
+        }
+        else
+        {
+            value.known = FALSE;
+            value.value = 0;
+        }
+        skip_newlines(token);
+    }
+    return value;
+}
+
+/* expr = ident "=" expr | logical-or. The assignment's value is the right-hand
  * side's value, so chained assignment works; each level costs one PUSH of the
  * target address on the hardware stack, counted as an operation. */
 static struct pbb16_value validate_expression(struct token_list** token, int depth, int* operations)
@@ -421,7 +529,7 @@ static struct pbb16_value validate_expression(struct token_list** token, int dep
         }
     }
     {
-        struct pbb16_value result = validate_relational(token, depth, operations);
+        struct pbb16_value result = validate_logical_or(token, depth, operations);
         skip_newlines(token);
         if(*token != NULL && match((*token)->s, "="))
             unsupported(*token, "left side of = must be a declared variable");

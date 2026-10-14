@@ -1568,6 +1568,61 @@ void relational_expr(void)
 	relational_expr_stub();
 }
 
+/* PBB16 stage 8: logical operators are real control flow, not aliases for
+ * bitwise AND/OR. Each operator evaluates its left operand first, branches
+ * around the right operand when C short-circuiting requires it, and leaves a
+ * normalized int 0 or 1 in R0. Keeping && and || in separate functions also
+ * restores their standard precedence for the PBB16 subset. */
+void pbb16_logical_and_expr(void)
+{
+	relational_expr();
+	while(match("&&", global_token->s))
+	{
+		char* number_string = int2str(current_count, 10, TRUE);
+		char* left_false_id = create_unique_id("LAND_LEFT_FALSE_", function->s, number_string);
+		char* right_false_id = create_unique_id("LAND_RIGHT_FALSE_", function->s, number_string);
+		char* done_id = create_unique_id("LAND_DONE_", function->s, number_string);
+		current_count = current_count + 1;
+
+		emit_jump_if_zero(REGISTER_ZERO, "", left_false_id, "short-circuit && left");
+		require_extra_token();
+		relational_expr();
+		emit_jump_if_zero(REGISTER_ZERO, "", right_false_id, "short-circuit && right");
+		emit_load_immediate(REGISTER_ZERO, 1, "logical && true");
+		emit_unconditional_jump("", done_id, "logical && done");
+		emit_label("", left_false_id);
+		emit_label("", right_false_id);
+		emit_load_immediate(REGISTER_ZERO, 0, "logical && false");
+		emit_label("", done_id);
+		current_target = integer;
+	}
+}
+
+void pbb16_logical_or_expr(void)
+{
+	pbb16_logical_and_expr();
+	while(match("||", global_token->s))
+	{
+		char* number_string = int2str(current_count, 10, TRUE);
+		char* left_true_id = create_unique_id("LOR_LEFT_TRUE_", function->s, number_string);
+		char* right_true_id = create_unique_id("LOR_RIGHT_TRUE_", function->s, number_string);
+		char* done_id = create_unique_id("LOR_DONE_", function->s, number_string);
+		current_count = current_count + 1;
+
+		emit_jump_if_not_zero(REGISTER_ZERO, "", left_true_id, "short-circuit || left");
+		require_extra_token();
+		pbb16_logical_and_expr();
+		emit_jump_if_not_zero(REGISTER_ZERO, "", right_true_id, "short-circuit || right");
+		emit_load_immediate(REGISTER_ZERO, 0, "logical || false");
+		emit_unconditional_jump("", done_id, "logical || done");
+		emit_label("", left_true_id);
+		emit_label("", right_true_id);
+		emit_load_immediate(REGISTER_ZERO, 1, "logical || true");
+		emit_label("", done_id);
+		current_target = integer;
+	}
+}
+
 /*
  * bitwise-expr:
  *         relational-expr
@@ -1632,8 +1687,15 @@ void bitwise_expr_stub(void)
 
 void bitwise_expr(void)
 {
-	relational_expr();
-	bitwise_expr_stub();
+	if(PBB16 == Architecture)
+	{
+		pbb16_logical_or_expr();
+	}
+	else
+	{
+		relational_expr();
+		bitwise_expr_stub();
+	}
 }
 
 /*
@@ -1675,7 +1737,11 @@ void primary_expr(void)
 	}
 	else if('!' == global_token->s[0])
 	{
-		if((RISCV32 != Architecture) && (RISCV64 != Architecture))
+		if(PBB16 == Architecture)
+		{
+			emit_load_immediate(REGISTER_ZERO, 0, "logical ! compare value");
+		}
+		else if((RISCV32 != Architecture) && (RISCV64 != Architecture))
 		{
 			emit_load_immediate(REGISTER_ZERO, 1, "primary expr");
 		}
@@ -1683,6 +1749,14 @@ void primary_expr(void)
 		common_recursion(postfix_expr);
 
 		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("CMPU R0 R1 R0\nSET.G R0 R0 1\n");
+		else if(PBB16 == Architecture)
+		{
+			char* number_string = int2str(current_count, 10, TRUE);
+			char* unique_id = create_unique_id("LNOT_", function->s, number_string);
+			current_count = current_count + 1;
+			pbb16_emit_compare(unique_id, PBB16_CMP_EQ);
+			current_target = integer;
+		}
 		else if(X86 == Architecture) emit_out("cmp_ebx,eax\nseta_al\nmovzx_eax,al\n");
 		else if(AMD64 == Architecture) emit_out("cmp_rbx,rax\nseta_al\nmovzx_rax,al\n");
 		else if(ARMV7L == Architecture) emit_out("'0' R0 CMP R1 AUX_ALWAYS\n!0 R0 LOADI8_ALWAYS\n!1 R0 LOADI8_HI\n");

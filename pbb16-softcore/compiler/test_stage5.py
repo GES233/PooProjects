@@ -243,8 +243,6 @@ def run_tests():
         "else return 1;",                                 # else without if
         "if (1) { x = 1; } return 0;",                    # undeclared variable
         "if (0) { return 200 * 200; } return 1;",         # dead code is still validated
-        "return 1 && 1;",                                 # logical operators are a later stage
-        "return !1;",                                     # unary ! is a later stage
         "return 1 | 2;",                                  # bitwise operators are a later stage
         "return ~1;",
     ]

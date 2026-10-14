@@ -265,9 +265,18 @@ reset:
 
 		define_state = DEFINE_STATE_NONE;
 	}
-	else if(in_set(c, "<=>|&!^%"))
+	/* "!!" is two C punctuators, not one operator token. The upstream
+	 * catch-all operator reader merged it and made the common !!x idiom
+	 * impossible to parse. Keep != together but leave a following ! for the
+	 * next token. */
+	else if(c == '!')
 	{
-		c = preserve_keyword(c, "<=>|&!^%");
+		c = consume_byte(c);
+		if(c == '=') c = consume_byte(c);
+	}
+	else if(in_set(c, "<=>|&^%"))
+	{
+		c = preserve_keyword(c, "<=>|&^%");
 	}
 	else if(in_set(c, "'\""))
 	{

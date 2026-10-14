@@ -1375,8 +1375,14 @@ void emit_push(int reg, char* note)
 {
 	if(PBB16 == Architecture)
 	{
-		require(reg == REGISTER_ZERO, "PBB16: only R0 expression push implemented\n");
-		emit_out("PUSH R0\n");
+		emit_out("PUSH ");
+		emit_out(register_from_string(reg));
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
 		return;
 	}
 	char* reg_name = register_from_string(reg);
@@ -1431,8 +1437,14 @@ void emit_pop(int reg, char* note)
 {
 	if(PBB16 == Architecture)
 	{
-		require(reg == REGISTER_ONE, "PBB16: only R1 expression pop implemented\n");
-		emit_out("POP R1\n");
+		emit_out("POP ");
+		emit_out(register_from_string(reg));
+		if(note != NULL)
+		{
+			emit_out(" ; ");
+			emit_out(note);
+		}
+		emit_out("\n");
 		return;
 	}
 	char* reg_name = register_from_string(reg);

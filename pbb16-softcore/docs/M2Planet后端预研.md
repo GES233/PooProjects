@@ -93,11 +93,12 @@ _start: MOVUI R6, 0xFF ; ORI R6, 0xFE   ; SP = 0xFFFE（复位已做，可省）
 
 ## 5. 实施路线（依赖关系）
 
-1. ~~第二阶段：48 条指令 + 异常~~ ✅ 已完成
-2. **总线化 + MMIO 串口**（C 程序的 printf/getchar 的前提）← 下一步
-3. ABI 定稿：寄存器映射（第 2 节）+ 栈帧布局 + 首参 depth，写入规格
-4. M2-Planet 后端：先打通 `test/test0000`（`return 42`）最小链路，再扩测试
-   （`test/test0000`–`test0026`、`test/run-pass/*`，在 iverilog 仿真里回归）
+1. ~~第二阶段：48 条指令 + 异常~~ ✅ 已完成（后续 ISA v3 已扩至 52 条）
+2. ~~总线化 + MMIO 串口~~ ✅ 已完成
+3. ~~ABI 定稿：寄存器映射 + 栈帧布局 + 首参 depth~~ ✅ C ABI v1 见
+   [`PBB16_C_ABI.md`](PBB16_C_ABI.md)
+4. **M2-Planet 后端扩展**：`return 42`、表达式、局部变量、控制流、循环、
+   多函数/固定参数已在 stage 1–7 通过 iverilog；继续补短路逻辑、位运算和全局数据
 5. 自举里程碑：PBB16 后端能编译 M2-Planet 自身（自举验证 = 输出逐字节一致）
 
 ## 6. 参考链接

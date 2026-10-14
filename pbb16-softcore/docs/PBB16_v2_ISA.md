@@ -33,8 +33,9 @@
 | 指令条数 | 52 |
 | 物理地址 | 22 位（4MB），v3 起经 banking / 远访存到达（第 8 节、3.6b） |
 
-ABI 约定（软件层面，硬件不强制，PUSH/POP/CALL/RET 除外）：
-R0–R3 传参/临时，R4–R5 保存/地址，R6 = SP，R7 自由。
+C ABI 是软件层约定，硬件不强制（PUSH/POP/CALL/RET 固定使用 R6 除外）。
+当前 C ABI v1 采用栈传参、R0 返回值、R5 参数基址、R6=SP、R7 局部帧基址；
+完整调用者/被调用者规则见 [`PBB16_C_ABI.md`](PBB16_C_ABI.md)。
 
 ---
 

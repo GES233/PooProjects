@@ -365,6 +365,12 @@ void function_call(struct token_list* s, int is_function_pointer)
 			emit_out(s->s);
 			emit_out(" jal\n");
 		}
+		else if(PBB16 == Architecture)
+		{
+			emit_out("CALL FUNCTION_");
+			emit_out(s->s);
+			emit_out("\n");
+		}
 	}
 
 	if(passed > 0)
@@ -2868,6 +2874,7 @@ void collect_arguments(void)
 				else if(AARCH64 == Architecture) a->depth = register_size;
 				else if(RISCV32 == Architecture) a->depth = -4;
 				else if(RISCV64 == Architecture) a->depth = -8;
+				else if(PBB16 == Architecture) a->depth = -2;
 			}
 			else
 			{
@@ -2878,6 +2885,7 @@ void collect_arguments(void)
 				else if(AARCH64 == Architecture) a->depth = function->arguments->depth + register_size;
 				else if(RISCV32 == Architecture) a->depth = function->arguments->depth - register_size;
 				else if(RISCV64 == Architecture) a->depth = function->arguments->depth - register_size;
+				else if(PBB16 == Architecture) a->depth = function->arguments->depth - register_size;
 			}
 
 			require_extra_token();

@@ -1,12 +1,14 @@
-/* PBB16 stages 1-6 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-7 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  *
- * Stage 6 grammar (a strict subset of what the upstream parser accepts):
- *   program    := "int" "main" "(" ["void"] ")" "{" { statement } "}" EOF
- *                 (the last statement must definitely return)
+ * Stage 7 grammar (a strict subset of what the upstream parser accepts):
+ *   program    := { function } EOF (exactly one zero-argument main)
+ *   function   := "int" ident "(" ["void" | params] ")"
+ *                 "{" { statement } "}"
+ *   params     := "int" ident { "," "int" ident }
  *   statement  := "int" ident ["=" expr] ";"   (declaration, one declarator,
- *                                               main's top level only)
+ *                                               function top level only)
  *               | expr ";"                     (expression or assignment)
  *               | "return" expr ";"            (last statement of its block)
  *               | "if" "(" expr ")" body ["else" body]
@@ -20,7 +22,8 @@
  *   additive   := term { ("+" | "-") term }
  *   term       := unary { ("*" | "/" | "%") unary }
  *   unary      := "-" unary | primary
- *   primary    := literal | ident | "(" expr ")"
+ *   primary    := literal | ident | ident "(" [arguments] ")" | "(" expr ")"
+ *   arguments  := expr { "," expr }
  *
  * The gate tracks each local's value while it is compile-time known, so
  * constant expressions keep their exact stage 1-3 overflow/div-by-zero
@@ -43,20 +46,26 @@ struct pbb16_value
 
 /* Gate symbol table: names point into the token stream (no copies needed). */
 #define PBB16_MAX_LOCALS 32
+#define PBB16_MAX_FUNCTIONS 32
 static char* pbb16_local_names[PBB16_MAX_LOCALS];
 static int pbb16_local_known[PBB16_MAX_LOCALS];
 static int pbb16_local_values[PBB16_MAX_LOCALS];
 static int pbb16_local_count;
 static int pbb16_loop_depth;
+static char* pbb16_function_names[PBB16_MAX_FUNCTIONS];
+static int pbb16_function_arities[PBB16_MAX_FUNCTIONS];
+static int pbb16_function_count;
+static int pbb16_visible_function_count;
 
 static void unsupported(struct token_list* token, char* message)
 {
     if(token != NULL) line_error_token(token);
     fputs("PBB16: ", stderr);
     fputs(message, stderr);
-    fputs("\nSupported: int main(void) { statements; return EXPR; } with int locals,"
+    fputs("\nSupported: int functions with fixed int parameters, int main(void), int locals,"
           " assignment, literals 0..32767, unary -, binary + - * / %%, parentheses,"
-          " comparisons < <= > >= == !=, if/else, while/do-while/for, break/continue.\n", stderr);
+          " calls, comparisons < <= > >= == !=, if/else, while/do-while/for,"
+          " break/continue.\n", stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -113,6 +122,14 @@ static int find_local(char* name)
     return -1;
 }
 
+static int find_function(char* name)
+{
+    int i;
+    for(i = 0; i < pbb16_function_count; i = i + 1)
+        if(match(pbb16_function_names[i], name)) return i;
+    return -1;
+}
+
 static int validate_literal(struct token_list* token)
 {
     if(token == NULL) unsupported(token, "missing integer literal");
@@ -151,6 +168,39 @@ static int validate_literal(struct token_list* token)
 
 static struct pbb16_value validate_expression(struct token_list** token, int depth, int* operations);
 
+static struct pbb16_value validate_call(struct token_list** token, int depth, int* operations)
+{
+    struct token_list* name_token = *token;
+    struct pbb16_value result;
+    int function_index = find_function(name_token->s);
+    int passed = 0;
+
+    if(depth >= 64) unsupported(name_token, "function calls exceed 64 nested expression levels");
+    if(function_index < 0) unsupported(name_token, "call to an undeclared function");
+    if(function_index >= pbb16_visible_function_count)
+        unsupported(name_token, "called function must be defined before use");
+    *token = (*token)->next;
+    expect(token, "(");
+    skip_newlines(token);
+    if(*token != NULL && !match((*token)->s, ")"))
+    {
+        for(;;)
+        {
+            validate_expression(token, depth + 1, operations);
+            passed = passed + 1;
+            skip_newlines(token);
+            if(*token == NULL || !match((*token)->s, ",")) break;
+            *token = (*token)->next;
+        }
+    }
+    expect(token, ")");
+    if(passed != pbb16_function_arities[function_index])
+        unsupported(name_token, "function call has the wrong number of arguments");
+    result.known = FALSE;
+    result.value = 0;
+    return result;
+}
+
 static struct pbb16_value validate_primary(struct token_list** token, int depth, int* operations)
 {
     skip_newlines(token);
@@ -165,8 +215,12 @@ static struct pbb16_value validate_primary(struct token_list** token, int depth,
     }
     if(*token != NULL && is_identifier_name((*token)->s))
     {
+        struct token_list* lookahead = (*token)->next;
         int slot = find_local((*token)->s);
         struct pbb16_value result;
+        while(lookahead != NULL && match(lookahead->s, "\n")) lookahead = lookahead->next;
+        if(lookahead != NULL && match(lookahead->s, "("))
+            return validate_call(token, depth, operations);
         if(slot < 0) unsupported(*token, "use of undeclared variable");
         result.known = pbb16_local_known[slot];
         result.value = pbb16_local_values[slot];
@@ -393,6 +447,8 @@ static void validate_declaration(struct token_list** token, int* operations)
         unsupported(name_token, "reserved name cannot be used for a local variable");
     if(find_local(name_token->s) >= 0)
         unsupported(name_token, "redeclaration of a local variable");
+    if(find_function(name_token->s) >= 0)
+        unsupported(name_token, "local variable name conflicts with a function name");
     *token = (*token)->next;
     skip_newlines(token);
     if(*token != NULL && match((*token)->s, "["))
@@ -458,7 +514,7 @@ static int validate_for(struct token_list** token, int* operations, int block_de
 
 /* One statement. Returns TRUE when it never falls through (a return, a
  * break/continue, or an if whose every path does one of those). Declarations
- * stay at main's top level (in_block rejects them): the flat symbol table
+ * stay at a function's top level (in_block rejects them): the flat symbol table
  * has no scoping. */
 static int validate_statement(struct token_list** token, int* operations, int block_depth, int in_block)
 {
@@ -466,7 +522,7 @@ static int validate_statement(struct token_list** token, int* operations, int bl
     if(*token == NULL) unsupported(*token, "unexpected end of program");
     if(match((*token)->s, "int"))
     {
-        if(in_block) unsupported(*token, "declare locals at the top level of main, not inside if/else/loop bodies");
+        if(in_block) unsupported(*token, "declare locals at the top level of a function, not inside if/else/loop bodies");
         validate_declaration(token, operations);
         return FALSE;
     }
@@ -594,7 +650,7 @@ static void validate_loop_body(struct token_list** token, int* operations, int b
 }
 
 /* Loops never definitely return (conservative: even while(1) { return x; }),
- * so main still needs a trailing return after a loop. */
+ * so a function still needs a trailing return after a loop. */
 static int validate_while(struct token_list** token, int* operations, int block_depth)
 {
     if(block_depth >= 16) unsupported(*token, "control flow nested more than 16 deep");
@@ -631,7 +687,7 @@ static int validate_for(struct token_list** token, int* operations, int block_de
     expect(token, "(");
     skip_newlines(token);
     if(*token != NULL && match((*token)->s, "int"))
-        unsupported(*token, "declare locals at the top level of main, not in a for header");
+        unsupported(*token, "declare locals at the top level of a function, not in a for header");
     if(*token != NULL && !match((*token)->s, ";"))
         validate_expression(token, 0, operations);
     expect(token, ";");
@@ -643,38 +699,162 @@ static int validate_for(struct token_list** token, int* operations, int block_de
     return FALSE;
 }
 
+static void collect_function_signatures(struct token_list* token)
+{
+    int main_count = 0;
+    pbb16_function_count = 0;
+    skip_newlines(&token);
+    while(token != NULL)
+    {
+        struct token_list* name_token;
+        int arity = 0;
+        int brace_depth = 1;
+        int function_index;
+
+        expect(&token, "int");
+        skip_newlines(&token);
+        if(token == NULL || !is_identifier_name(token->s))
+            unsupported(token, "expected a function name after int");
+        name_token = token;
+        if(is_reserved_name(name_token->s) && !match(name_token->s, "main"))
+            unsupported(name_token, "reserved name cannot be used for a function");
+        if(find_function(name_token->s) >= 0)
+            unsupported(name_token, "duplicate function definition");
+        if(pbb16_function_count >= PBB16_MAX_FUNCTIONS)
+            unsupported(name_token, "too many functions (maximum 32)");
+        function_index = pbb16_function_count;
+        pbb16_function_names[function_index] = name_token->s;
+        pbb16_function_arities[function_index] = 0;
+        pbb16_function_count = pbb16_function_count + 1;
+        token = token->next;
+        expect(&token, "(");
+        skip_newlines(&token);
+        if(token != NULL && match(token->s, "void"))
+        {
+            token = token->next;
+            skip_newlines(&token);
+            if(token == NULL || !match(token->s, ")"))
+                unsupported(token, "void must be the function's only parameter marker");
+        }
+        else if(token != NULL && !match(token->s, ")"))
+        {
+            for(;;)
+            {
+                expect(&token, "int");
+                skip_newlines(&token);
+                if(token == NULL || !is_identifier_name(token->s))
+                    unsupported(token, "expected a parameter name after int");
+                arity = arity + 1;
+                if(arity > PBB16_MAX_LOCALS)
+                    unsupported(token, "too many parameters (maximum 32)");
+                token = token->next;
+                skip_newlines(&token);
+                if(token == NULL || !match(token->s, ",")) break;
+                token = token->next;
+            }
+        }
+        expect(&token, ")");
+        pbb16_function_arities[function_index] = arity;
+        if(match(name_token->s, "main"))
+        {
+            main_count = main_count + 1;
+            if(arity != 0) unsupported(name_token, "main must not take parameters");
+        }
+        expect(&token, "{");
+        while(token != NULL && brace_depth > 0)
+        {
+            if(match(token->s, "{")) brace_depth = brace_depth + 1;
+            else if(match(token->s, "}")) brace_depth = brace_depth - 1;
+            token = token->next;
+        }
+        if(brace_depth != 0) unsupported(token, "unexpected end of program inside a function");
+        skip_newlines(&token);
+    }
+    if(main_count != 1) unsupported(global_token, "program must define exactly one main function");
+}
+
+static void add_parameter(struct token_list* name_token)
+{
+    if(is_reserved_name(name_token->s))
+        unsupported(name_token, "reserved name cannot be used for a parameter");
+    if(find_local(name_token->s) >= 0)
+        unsupported(name_token, "duplicate parameter name");
+    if(find_function(name_token->s) >= 0)
+        unsupported(name_token, "parameter name conflicts with a function name");
+    if(pbb16_local_count >= PBB16_MAX_LOCALS)
+        unsupported(name_token, "too many parameters and local variables (maximum 32)");
+    pbb16_local_names[pbb16_local_count] = name_token->s;
+    pbb16_local_known[pbb16_local_count] = FALSE;
+    pbb16_local_values[pbb16_local_count] = 0;
+    pbb16_local_count = pbb16_local_count + 1;
+}
+
+static void validate_function(struct token_list** token, int function_index)
+{
+    int operations = 0;
+    int returned = FALSE;
+    int parsed_arity = 0;
+
+    pbb16_local_count = 0;
+    pbb16_loop_depth = 0;
+    pbb16_visible_function_count = function_index + 1;
+    expect(token, "int");
+    expect(token, pbb16_function_names[function_index]);
+    expect(token, "(");
+    skip_newlines(token);
+    if(*token != NULL && match((*token)->s, "void"))
+    {
+        *token = (*token)->next;
+    }
+    else if(*token != NULL && !match((*token)->s, ")"))
+    {
+        for(;;)
+        {
+            struct token_list* name_token;
+            expect(token, "int");
+            skip_newlines(token);
+            if(*token == NULL || !is_identifier_name((*token)->s))
+                unsupported(*token, "expected a parameter name after int");
+            name_token = *token;
+            *token = (*token)->next;
+            add_parameter(name_token);
+            parsed_arity = parsed_arity + 1;
+            skip_newlines(token);
+            if(*token == NULL || !match((*token)->s, ",")) break;
+            *token = (*token)->next;
+        }
+    }
+    expect(token, ")");
+    if(parsed_arity != pbb16_function_arities[function_index])
+        unsupported(*token, "function signature changed between validation passes");
+    expect(token, "{");
+    for(;;)
+    {
+        skip_newlines(token);
+        if(*token == NULL) unsupported(*token, "unexpected end of program inside a function");
+        if(match((*token)->s, "}"))
+        {
+            if(!returned) unsupported(*token, "missing return statement");
+            break;
+        }
+        if(returned) unsupported(*token, "statement after return/break/continue in the same block");
+        returned = validate_statement(token, &operations, 0, FALSE);
+    }
+    expect(token, "}");
+}
+
 /* Check capabilities before preprocessing so directives cannot bypass the gate.
  * Keep global_token in place for the original M2 parser after validation.
  */
 void pbb16_validate_program(void)
 {
     struct token_list* token = global_token;
-    int operations = 0;
-    int returned = FALSE;
-    pbb16_local_count = 0;
-    pbb16_loop_depth = 0;
-    expect(&token, "int");
-    expect(&token, "main");
-    expect(&token, "(");
+    int i;
+    collect_function_signatures(token);
+    for(i = 0; i < pbb16_function_count; i = i + 1)
+        validate_function(&token, i);
     skip_newlines(&token);
-    if(token != NULL && match(token->s, "void")) token = token->next;
-    expect(&token, ")");
-    expect(&token, "{");
-    for(;;)
-    {
-        skip_newlines(&token);
-        if(token == NULL) unsupported(token, "unexpected end of program inside main");
-        if(match(token->s, "}"))
-        {
-            if(!returned) unsupported(token, "missing return statement");
-            break;
-        }
-        if(returned) unsupported(token, "statement after return/break/continue in the same block");
-        returned = validate_statement(&token, &operations, 0, FALSE);
-    }
-    expect(&token, "}");
-    skip_newlines(&token);
-    if(token != NULL) unsupported(token, "only one main definition is supported");
+    if(token != NULL) unsupported(token, "unexpected tokens after the last function");
 }
 
 void pbb16_write_load_immediate(int reg, int value)

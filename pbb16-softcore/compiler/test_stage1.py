@@ -73,7 +73,7 @@ def run_tests():
         "int main(void) { return 42u; }",
         "int main(void) { return; }", "int main(void) { return 42 }",
         "int main(int x) { return 42; }", "int other(void) { return 42; }",
-        "int main(void) { return 42; } int other(void) { return 0; }",
+        "int main(void) { return 42; } int main(void) { return 0; }",
         "int main(void) { return sizeof(long); }", "int main(void) { asm(\"HLT\"); return 0; }",
         "#define N 42\nint main(void) { return N; }", "", "int main(void) { return 42;",
     ]

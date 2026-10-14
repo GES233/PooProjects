@@ -1,8 +1,8 @@
-/* PBB16 stages 1-8 target for M2-Planet 1.13.1.
+/* PBB16 stages 1-9 target for M2-Planet 1.13.1.
  * Local extension, 2026. SPDX-License-Identifier: GPL-3.0-or-later
  * See vendor/M2-Planet/LICENSE. Uses the upstream tokenizer and C parser.
  *
- * Stage 8 grammar (a strict subset of what the upstream parser accepts):
+ * Stage 9 grammar (a strict subset of what the upstream parser accepts):
  *   program    := { function } EOF (exactly one zero-argument main)
  *   function   := "int" ident "(" ["void" | params] ")"
  *                 "{" { statement } "}"
@@ -19,11 +19,15 @@
  *   body       := statement-without-declaration | "{" { same } "}"
  *   expr       := ident "=" expr | logical-or  (assignment is right-associative)
  *   logical-or := logical-and { "||" logical-and }
- *   logical-and:= relational { "&&" relational }
- *   relational := additive { ("<"|"<="|">"|">="|"=="|"!=") additive }
+ *   logical-and:= bitwise-or { "&&" bitwise-or }
+ *   bitwise-or := bitwise-xor { "|" bitwise-xor }
+ *   bitwise-xor:= bitwise-and { "^" bitwise-and }
+ *   bitwise-and:= relational { "&" relational }
+ *   relational := shift { ("<"|"<="|">"|">="|"=="|"!=") shift }
+ *   shift      := additive { ("<<" | ">>") additive }
  *   additive   := term { ("+" | "-") term }
  *   term       := unary { ("*" | "/" | "%") unary }
- *   unary      := ("-" | "!") unary | primary
+ *   unary      := ("-" | "!" | "~") unary | primary
  *   primary    := literal | ident | ident "(" [arguments] ")" | "(" expr ")"
  *   arguments  := expr { "," expr }
  *
@@ -65,7 +69,7 @@ static void unsupported(struct token_list* token, char* message)
     fputs("PBB16: ", stderr);
     fputs(message, stderr);
     fputs("\nSupported: int functions with fixed int parameters, int main(void), int locals,"
-          " assignment, literals 0..32767, unary - !, binary + - * / %%, parentheses,"
+          " assignment, literals 0..32767, unary - ! ~, binary + - * / % << >> & ^ |, parentheses,"
           " calls, comparisons < <= > >= == !=, if/else, while/do-while/for,"
           " break/continue, short-circuit && ||.\n", stderr);
     exit(EXIT_FAILURE);
@@ -245,16 +249,18 @@ static struct pbb16_value validate_primary(struct token_list** token, int depth,
     exit(EXIT_FAILURE);
 }
 
-/* unary = ("-" | "!") unary | primary. Both operators are handled recursively
- * by upstream primary_expr and each counts as one operation. Logical negation
- * always materializes a normalized 0/1 value. */
+/* unary = ("-" | "!" | "~") unary | primary. All operators are handled
+ * recursively by upstream primary_expr and each counts as one operation.
+ * Logical negation materializes 0/1; ~ is a 16-bit one's complement. */
 static struct pbb16_value validate_unary(struct token_list** token, int depth, int* operations)
 {
     skip_newlines(token);
-    if(*token != NULL && (match((*token)->s, "-") || match((*token)->s, "!")))
+    if(*token != NULL && (match((*token)->s, "-") || match((*token)->s, "!") ||
+                          match((*token)->s, "~")))
     {
         struct token_list* operator_token = *token;
         int logical_not = match(operator_token->s, "!");
+        int bitwise_not = match(operator_token->s, "~");
         *operations = *operations + 1;
         if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
         *token = (*token)->next;
@@ -262,6 +268,7 @@ static struct pbb16_value validate_unary(struct token_list** token, int depth, i
         if(value.known)
         {
             if(logical_not) value.value = value.value == 0;
+            else if(bitwise_not) value.value = -1 - value.value;
             else if(value.value == (-32767 - 1))
                 unsupported(operator_token, "intermediate result exceeds signed 16-bit range");
             else value.value = -value.value;
@@ -358,14 +365,62 @@ static struct pbb16_value validate_additive(struct token_list** token, int depth
     return value;
 }
 
-/* relational = additive { ("<"|"<="|">"|">="|"=="|"!=") additive }.
+/* shift = additive { ("<<" | ">>") additive }. PBB16 int is signed, so
+ * right shift is arithmetic. Known invalid/undefined signed shifts are
+ * rejected; unknown runtime values remain the program's responsibility. */
+static struct pbb16_value validate_shift(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_additive(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && (match((*token)->s, "<<") || match((*token)->s, ">>")))
+    {
+        struct token_list* operator_token = *token;
+        int shift_left = match(operator_token->s, "<<");
+        struct pbb16_value right;
+        int count;
+
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        *token = (*token)->next;
+        right = validate_additive(token, depth, operations);
+        if(right.known && (right.value < 0 || right.value >= 16))
+            unsupported(operator_token, "shift count must be in the range 0..15");
+        if(value.known && right.known)
+        {
+            if(shift_left && value.value < 0)
+                unsupported(operator_token, "left shift of a negative value is undefined in C");
+            count = right.value;
+            while(count > 0)
+            {
+                if(shift_left)
+                {
+                    if(value.value > 32767 / 2)
+                        unsupported(operator_token, "signed left shift exceeds signed 16-bit range");
+                    value.value = value.value * 2;
+                }
+                else
+                {
+                    int odd_negative = value.value < 0 && value.value % 2 != 0;
+                    value.value = value.value / 2;
+                    if(odd_negative) value.value = value.value - 1;
+                }
+                count = count - 1;
+            }
+        }
+        else value.known = FALSE;
+        skip_newlines(token);
+    }
+    return value;
+}
+
+/* relational = shift { ("<"|"<="|">"|">="|"=="|"!=") shift }.
  * M2-Planet keeps all six operators at one flat precedence level (in C,
  * == and != sit below the others); the gate mirrors the parser so tracked
  * values always match the generated code. Comparisons yield 0/1 and can
  * never overflow. */
 static struct pbb16_value validate_relational(struct token_list** token, int depth, int* operations)
 {
-    struct pbb16_value value = validate_additive(token, depth, operations);
+    struct pbb16_value value = validate_shift(token, depth, operations);
     skip_newlines(token);
     for(;;)
     {
@@ -384,7 +439,7 @@ static struct pbb16_value validate_relational(struct token_list** token, int dep
         *operations = *operations + 1;
         if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
         *token = (*token)->next;
-        right = validate_additive(token, depth, operations);
+        right = validate_shift(token, depth, operations);
         if(value.known && right.known)
         {
             int left = value.value;
@@ -402,13 +457,70 @@ static struct pbb16_value validate_relational(struct token_list** token, int dep
     return value;
 }
 
+static struct pbb16_value validate_bitwise_and(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_relational(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && match((*token)->s, "&"))
+    {
+        struct token_list* operator_token = *token;
+        struct pbb16_value right;
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        *token = (*token)->next;
+        right = validate_relational(token, depth, operations);
+        if(value.known && right.known) value.value = value.value & right.value;
+        else value.known = FALSE;
+        skip_newlines(token);
+    }
+    return value;
+}
+
+static struct pbb16_value validate_bitwise_xor(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_bitwise_and(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && match((*token)->s, "^"))
+    {
+        struct token_list* operator_token = *token;
+        struct pbb16_value right;
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        *token = (*token)->next;
+        right = validate_bitwise_and(token, depth, operations);
+        if(value.known && right.known) value.value = value.value ^ right.value;
+        else value.known = FALSE;
+        skip_newlines(token);
+    }
+    return value;
+}
+
+static struct pbb16_value validate_bitwise_or(struct token_list** token, int depth, int* operations)
+{
+    struct pbb16_value value = validate_bitwise_xor(token, depth, operations);
+    skip_newlines(token);
+    while(*token != NULL && match((*token)->s, "|"))
+    {
+        struct token_list* operator_token = *token;
+        struct pbb16_value right;
+        *operations = *operations + 1;
+        if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
+        *token = (*token)->next;
+        right = validate_bitwise_xor(token, depth, operations);
+        if(value.known && right.known) value.value = value.value | right.value;
+        else value.known = FALSE;
+        skip_newlines(token);
+    }
+    return value;
+}
+
 /* The right operand of &&/|| is always parsed and validated, but assignments
  * in it affect the live constant environment only on paths where it executes.
  * This mirrors runtime short-circuiting without treating dead source as exempt
  * from the subset's syntax and signed-16-bit checks. */
 static struct pbb16_value validate_logical_and(struct token_list** token, int depth, int* operations)
 {
-    struct pbb16_value value = validate_relational(token, depth, operations);
+    struct pbb16_value value = validate_bitwise_or(token, depth, operations);
     skip_newlines(token);
     while(*token != NULL && match((*token)->s, "&&"))
     {
@@ -422,7 +534,7 @@ static struct pbb16_value validate_logical_and(struct token_list** token, int de
         if(*operations > 256) unsupported(operator_token, "expression exceeds 256 operations");
         save_env(before_known, before_values);
         *token = (*token)->next;
-        right = validate_relational(token, depth, operations);
+        right = validate_bitwise_or(token, depth, operations);
 
         if(left.known && left.value == 0)
             restore_env(before_known, before_values);

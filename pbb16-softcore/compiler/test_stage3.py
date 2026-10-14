@@ -122,7 +122,7 @@ def run_tests():
         "-(0-32767-1)",                           # -INT16_MIN = 32768
         "--5",                                    # prefix decrement token, not two minuses
         "1**2", "1*/2", "*1", "/1", "%1", "1*2*",
-        "~1", "1~2",                              # bitwise not is not in this stage
+        "1~2",                                     # missing binary operator
         "+5",                                     # unary plus still unsupported
         "1 + * 2",
         "1" + "*1" * 257,                         # 257 operations: over the limit

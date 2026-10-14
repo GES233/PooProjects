@@ -1360,7 +1360,13 @@ void additive_expr_b(void)
 
 void additive_expr_stub_c(void)
 {
-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+	if(PBB16 == Architecture)
+	{
+		/* int is signed: use arithmetic right shift. */
+		general_recursion(additive_expr_b, "SHL R1, R0\nMOV R0, R1\n", "<<", additive_expr_stub_c);
+		general_recursion(additive_expr_b, "SAR R1, R0\nMOV R0, R1\n", ">>", additive_expr_stub_c);
+	}
+	else if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
 	{
 		arithmetic_recursion(additive_expr_b, "SAL R0 R1 R0\n", "SL0 R0 R1 R0\n", "<<", additive_expr_stub_c);
 		arithmetic_recursion(additive_expr_b, "SAR R0 R1 R0\n", "SR0 R0 R1 R0\n", ">>", additive_expr_stub_c);
@@ -1568,6 +1574,38 @@ void relational_expr(void)
 	relational_expr_stub();
 }
 
+/* PBB16 stage 9: keep standard bitwise precedence below the upstream flat
+ * relational/equality layer and above the short-circuit logical operators. */
+void pbb16_bitwise_and_expr(void)
+{
+	relational_expr();
+	while(match("&", global_token->s))
+	{
+		common_recursion(relational_expr);
+		emit_out("AND R0, R1\n");
+	}
+}
+
+void pbb16_bitwise_xor_expr(void)
+{
+	pbb16_bitwise_and_expr();
+	while(match("^", global_token->s))
+	{
+		common_recursion(pbb16_bitwise_and_expr);
+		emit_out("XOR R0, R1\n");
+	}
+}
+
+void pbb16_bitwise_or_expr(void)
+{
+	pbb16_bitwise_xor_expr();
+	while(match("|", global_token->s))
+	{
+		common_recursion(pbb16_bitwise_xor_expr);
+		emit_out("OR R0, R1\n");
+	}
+}
+
 /* PBB16 stage 8: logical operators are real control flow, not aliases for
  * bitwise AND/OR. Each operator evaluates its left operand first, branches
  * around the right operand when C short-circuiting requires it, and leaves a
@@ -1575,7 +1613,7 @@ void relational_expr(void)
  * restores their standard precedence for the PBB16 subset. */
 void pbb16_logical_and_expr(void)
 {
-	relational_expr();
+	pbb16_bitwise_or_expr();
 	while(match("&&", global_token->s))
 	{
 		char* number_string = int2str(current_count, 10, TRUE);
@@ -1586,7 +1624,7 @@ void pbb16_logical_and_expr(void)
 
 		emit_jump_if_zero(REGISTER_ZERO, "", left_false_id, "short-circuit && left");
 		require_extra_token();
-		relational_expr();
+		pbb16_bitwise_or_expr();
 		emit_jump_if_zero(REGISTER_ZERO, "", right_false_id, "short-circuit && right");
 		emit_load_immediate(REGISTER_ZERO, 1, "logical && true");
 		emit_unconditional_jump("", done_id, "logical && done");
@@ -1768,6 +1806,7 @@ void primary_expr(void)
 		common_recursion(postfix_expr);
 
 		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("NOT R0 R0\n");
+		else if(PBB16 == Architecture) emit_out("NOT R0, R0\n");
 		else if(X86 == Architecture) emit_out("not_eax\n");
 		else if(AMD64 == Architecture) emit_out("not_rax\n");
 		else if(ARMV7L == Architecture) emit_out("'0' R0 R0 MVN_ALWAYS\n");

@@ -41,17 +41,18 @@
 函数调用按 `docs/PBB16_C_ABI.md` 从左到右栈传参、调用者清理，R0 返回、R5 参数基址、R6=SP、
 R7 局部帧基址，支持嵌套调用与直接递归，直接 CALL 当前受 ±1024 字节范围限制；
 逻辑非 `!` 与真正短路的 `&&`/`||`（标准优先级，结果物化为 0/1；右侧副作用按可执行路径合并，
-长右操作数沿用 `CMPI`+JCC/`J` 跳板）；
+长右操作数沿用 `CMPI`+JCC/`J` 跳板）；按位 `~`/`&`/`^`/`|` 和 `<<`/算术 `>>`（标准相对优先级，
+已知移位计数限 0～15，已知负值左移及有符号左移溢出在编译期拒绝）；
 中间结果限有符号 16 位，括号和表达式内函数调用最多 64 层、运算最多 256 次，常量除零在编译期拒绝；
 闸门跟踪变量的编译期已知值（跨分支按「所有下落路径一致」合并），常量表达式经变量转手后仍做溢出检查。
-一元正号、其他类型、数组、函数原型/前向调用、函数指针、位运算、游离块等其余输入明确拒绝。
+一元正号、其他类型、数组、函数原型/前向调用、函数指针、复合赋值、递增/递减、游离块等其余输入明确拒绝。
 帧布局：R7=LOCALS 帧基址（prologue `MOV R7, R6; ADDI R6, -N` 回填生成，epilogue
 `MOV R6, R7`），局部第 k 个 int 在 R7−2(k+1)，参数第 k 个 int 在 R5−2(k+1)，
 经 `MOV+ADDI` 算地址后偏移 0 访存。
 需要宿主 GCC、Python 3、iverilog/vvp。
 在 `pbb16-softcore/` 下运行 `python compiler/pbb16cc.py compiler/examples/return42.c -o compiler/build/return42.hex`，
 生成函数汇编、带启动代码的汇编和 memh 映像；完整说明见 `compiler/README.md`。
-修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage8.py`（包含 stage1-7 回归）。
+修改编译器、启动代码或相关 ABI 后运行 `python compiler/test_stage9.py`（包含 stage1-8 回归）。
 注意：`tb/tb_c_return.v` 按 `+localbytes=N` 放开帧窗口内的 LOD/STR 访问检查；
 `tb/tb_c_calls.v` 验证多层调用的栈区访问、最终 SP、R2/R5 恢复与返回值；
 源文件可以没有结尾换行（上游 cc_macro.c 的 maybe_expand 已修）。

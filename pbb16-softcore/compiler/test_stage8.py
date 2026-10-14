@@ -83,10 +83,6 @@ def run_tests():
         raise RuntimeError("generated assembly is missing logical control-flow sequences")
 
     rejected = [
-        "int main(void) { return 1 & 1; }",
-        "int main(void) { return 1 | 1; }",
-        "int main(void) { return 1 ^ 1; }",
-        "int main(void) { return ~1; }",
         "int main(void) { return 1 &&; }",
         "int main(void) { return || 1; }",
         "int main(void) { return !; }",

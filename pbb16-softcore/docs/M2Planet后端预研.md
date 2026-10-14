@@ -99,7 +99,8 @@ _start: MOVUI R6, 0xFF ; ORI R6, 0xFE   ; SP = 0xFFFE（复位已做，可省）
 3. ~~ABI 定稿：寄存器映射 + 栈帧布局 + 首参 depth~~ ✅ C ABI v1 见
    [`PBB16_C_ABI.md`](PBB16_C_ABI.md)
 4. **M2-Planet 后端扩展**：`return 42`、表达式、局部变量、控制流、循环、
-   多函数/固定参数及短路逻辑已在 stage 1–8 通过 iverilog；继续补位运算和全局数据
+   多函数/固定参数、短路逻辑及 16 位按位/移位运算已在 stage 1–9 通过 iverilog；
+   继续补全局数据
 5. 自举里程碑：PBB16 后端能编译 M2-Planet 自身（自举验证 = 输出逐字节一致）
 
 ## 6. 参考链接
